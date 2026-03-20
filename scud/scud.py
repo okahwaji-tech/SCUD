@@ -1,3 +1,14 @@
+"""Schedule-Conditioned Discrete Diffusion (SCUD) model.
+
+Implements the core SCUD diffusion model that conditions its denoising
+network on the realized jump schedule S, enabling tighter variational
+bounds and unifying masking and classical discrete diffusion.
+
+Reference: "Why Masking Diffusion Works" (NeurIPS 2025), Sections 4-6.
+"""
+
+from __future__ import annotations
+
 import math
 
 import numpy as np
@@ -11,20 +22,37 @@ from .utils import convert_to_probs, get_inf_gen, kls
 
 
 class SCUD(ContinuousTimeDiffusion):
+    """Schedule-Conditioned Discrete Diffusion (SCUD) model.
+
+    Implements the SCUD framework (Sections 4-6) where the denoiser is
+    conditioned on the realized jump schedule S ~ Poisson(-log_alpha(t)).
+    The transition kernel K is derived from the infinitesimal generator L,
+    and matrix powers K^S are precomputed via eigendecomposition for
+    efficient posterior computation.
+
+    Key hyperparameters:
+        gamma: Controls how much schedule information is provided to the
+            model. gamma=0 (code) = full schedule conditioning (paper gamma=1).
+        forward_kwargs: Specifies the forward process type (uniform, gaussian, blosum).
+        schedule_type: Noise schedule parameterization.
+
+    See the NOTE below about the gamma convention difference between code and paper.
+    """
+
     MAX_K_POWERS = 5000
     MAX_CLASSES_FOR_PRECOMPUTE = 512
 
     def __init__(
         self,
-        x0_model_class,
-        nn_params,
+        x0_model_class: type,
+        nn_params: dict[str, object],
         num_classes: int = 10,
-        forward_kwargs={"type": "uniform"},
-        schedule_type="cos",
-        gamma=0,
-        logistic_pars=False,
-        **kwargs,
-    ):
+        forward_kwargs: dict[str, object] = {"type": "uniform"},
+        schedule_type: str = "cos",
+        gamma: float = 0,
+        logistic_pars: bool = False,
+        **kwargs: object,
+    ) -> None:
         # Precalculate betas, define model_predict, p_sample
         super().__init__(
             x0_model_class, nn_params, num_classes, schedule_type, logistic_pars, **kwargs
@@ -60,13 +88,13 @@ class SCUD(ContinuousTimeDiffusion):
         self.register_buffer("K", K)
         self.register_buffer("K_powers", K_powers)
 
-    def pre_configure_model(self, dataloader):
+    def pre_configure_model(self, dataloader: object) -> None:
         self.calc_p0(dataloader)
         self.log_alpha, self.beta, *_ = self.get_beta_func(
             self.K.cpu(), self.p0.cpu(), type_="schedule_condition", scale=self.rate.cpu()
         )
 
-    def get_stationary(self):
+    def get_stationary(self) -> torch.Tensor:
         evals, evecs = torch.linalg.eig(self.K.T)
         norms_sq = torch.real(evals * evals.conj())
         assert torch.isclose(evals[torch.argmax(norms_sq)], torch.tensor(1, dtype=torch.complex64))
@@ -77,8 +105,20 @@ class SCUD(ContinuousTimeDiffusion):
         assert torch.all(stationary >= 0)
         return stationary / stationary.sum()
 
-    def get_trans_mats_mvp(self, Smk, v):
-        """v is a ...c matrix where K is cd, and Smk is ..."""
+    def get_trans_mats_mvp(self, Smk: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        """Compute K^{S-k} @ v via eigendecomposition-based matrix-vector product.
+
+        Efficiently computes the matrix-vector product of the transition matrix
+        raised to a per-element power with a probability vector, using the
+        precomputed eigendecomposition of K: K^n = V diag(lambda^n) V^{-1}.
+
+        Args:
+            Smk: Per-element exponents (S - k), shape (...).
+            v: Probability vectors, shape (..., C) where C = num_classes.
+
+        Returns:
+            Result of K^{Smk} @ v, shape (..., C), clamped to non-negative.
+        """
         dv = v.to(dtype=self.eigenvectors.dtype).reshape(-1, v.shape[-1])
         diag = self.eigenvalues ** F.relu(Smk.flatten()[..., None])
         dv = dv @ self.eigenvectors
@@ -86,7 +126,7 @@ class SCUD(ContinuousTimeDiffusion):
         dv = dv @ self.eigenvectors_inv
         return F.relu(dv.double()).to(torch.float32).reshape(v.shape)
 
-    def get_kl_t1(self, x):
+    def get_kl_t1(self, x: torch.Tensor) -> torch.Tensor:
         # sample S
         t = self.t_max * torch.ones(x.shape[0], device=x.device)
         S = sample_n_transitions_cont(self.log_alpha, x[0].flatten().shape[0], t)
@@ -97,7 +137,23 @@ class SCUD(ContinuousTimeDiffusion):
         kl = kls(x_1, torch.log(self.get_stationary() + self.eps))
         return kl.mean()
 
-    def x_t_sample(self, x_0, t, noise, S):
+    def x_t_sample(
+        self, x_0: torch.Tensor, t: torch.Tensor, noise: torch.Tensor, S: torch.Tensor
+    ) -> torch.Tensor:
+        """Sample from the forward process x_t ~ K^S(x_t | x_0) via Gumbel trick.
+
+        Applies S steps of the transition kernel K to the clean data x_0
+        by looking up precomputed K^S powers and sampling with Gumbel noise.
+
+        Args:
+            x_0: Clean data tensor of integer class indices, shape (B, ...).
+            t: Diffusion time (unused here, schedule is encoded in S).
+            noise: Uniform noise for Gumbel sampling, shape (B, ..., C).
+            S: Number of transitions per element, shape (B, ...).
+
+        Returns:
+            Noisy data x_t with same shape as x_0.
+        """
         # forward process, x_0 is the clean input.
         probs = self.K_powers[S, x_0, :]
         noise = torch.clip(noise, self.eps, 1.0)
@@ -105,8 +161,31 @@ class SCUD(ContinuousTimeDiffusion):
         x_t = torch.argmax(probs * gumbel_noise, dim=-1)
         return x_t
 
-    def q_posterior_logits(self, x_0, x_t, t, S, k=1, log=True):
-        """probs for x_{t-k}|x_t, x_0"""
+    def q_posterior_logits(
+        self,
+        x_0: torch.Tensor,
+        x_t: torch.Tensor,
+        t: torch.Tensor,
+        S: torch.Tensor,
+        k: int | torch.Tensor = 1,
+        log: bool = True,
+    ) -> torch.Tensor:
+        """Compute the denoising posterior q(x_{t-k} | x_t, x_0) (Eq. 5).
+
+        Factorizes as: q(x_{t-k} | x_t, x_0) proportional to
+        K^k(x_t | x_{t-k}) * K^{S-k}(x_{t-k} | x_0).
+
+        Args:
+            x_0: Clean data or predicted logits, shape (B, ...) or (B, ..., C).
+            x_t: Current noisy data, shape (B, ...).
+            t: Diffusion time (unused, schedule encoded in S).
+            S: Total transitions per element, shape (B, ...).
+            k: Number of transitions to reverse (default 1).
+            log: If True, return log-probabilities; else return probabilities.
+
+        Returns:
+            Posterior (log-)probabilities of shape (B, ..., C).
+        """
         fact1 = self.K_powers.swapaxes(1, 2)[k, x_t, :]  # x_t | x_{t-1}
         softmaxed = convert_to_probs(x_0, self.num_classes)  # bs, ..., num_classes
         fact2 = self.get_trans_mats_mvp(S - k, softmaxed)  # x_{t-1} | x_{0}
@@ -118,9 +197,22 @@ class SCUD(ContinuousTimeDiffusion):
 
     def forward(
         self,
-        x,
-        attn_mask=None,
-    ):
+        x: torch.Tensor,
+        attn_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, dict[str, float]]:
+        """Compute SCUD training loss (Proposition 4.4, Eq. 6).
+
+        Samples a random time t, computes the schedule S ~ Pois(-log_alpha(t)),
+        corrupts data via K^S, and computes the weighted KL divergence between
+        true and predicted denoising posteriors.
+
+        Args:
+            x: Clean data tensor, shape (B, ...).
+            attn_mask: Optional attention mask for sequence data, shape (B, L).
+
+        Returns:
+            Tuple of (loss, info_dict) where info_dict contains 'vb_loss' and 'ce_loss'.
+        """
         t, S, x_t = self.sample_point(x, attn_mask)
         # predict x_0 and prev(x_t)
         predicted_x0_logits = self.model_predict(x_t, t, attn_mask, S).to(torch.float32)
@@ -150,7 +242,16 @@ class SCUD(ContinuousTimeDiffusion):
             "ce_loss": ce_loss.detach().item(),
         }
 
-    def p_sample(self, x, t, attn_mask, noise, S=None, k=1, temperature=1):
+    def p_sample(
+        self,
+        x: torch.Tensor,
+        t: torch.Tensor,
+        attn_mask: torch.Tensor | None,
+        noise: torch.Tensor,
+        S: torch.Tensor | None = None,
+        k: int | torch.Tensor = 1,
+        temperature: float = 1,
+    ) -> torch.Tensor:
         # predict prev(x_t) or x_{t-1}
         predicted_x0_logits = self.model_predict(x, t, attn_mask, S) / temperature
         pred_q_posterior_logits = self.q_posterior_logits(
@@ -162,7 +263,16 @@ class SCUD(ContinuousTimeDiffusion):
         sample = torch.argmax(pred_q_posterior_logits * gumbel_noise, dim=-1)
         return sample
 
-    def corrector_sample(self, x, t, attn_mask, noise, S=None, k=1, temperature=1):
+    def corrector_sample(
+        self,
+        x: torch.Tensor,
+        t: torch.Tensor,
+        attn_mask: torch.Tensor | None,
+        noise: torch.Tensor,
+        S: torch.Tensor | None = None,
+        k: int | torch.Tensor = 1,
+        temperature: float = 1,
+    ) -> torch.Tensor:
         # predict prev(x_t) or x_{t-1}
         predicted_x0_logits = self.model_predict(x, t, attn_mask, S) / temperature
         pred_q_posterior_logits = self.q_posterior_logits(
@@ -277,14 +387,32 @@ class SCUD(ContinuousTimeDiffusion):
 
     def sample_sequence(
         self,
-        x,
-        attn_mask=None,
-        n_T=200,
-        stride=10,
-        n_corrector_steps=10,
-        temperature=1,
-        use_tau=False,
-    ):
+        x: torch.Tensor,
+        attn_mask: torch.Tensor | None = None,
+        n_T: int = 200,
+        stride: int = 10,
+        n_corrector_steps: int = 10,
+        temperature: float = 1,
+        use_tau: bool = False,
+    ) -> list[torch.Tensor]:
+        """Generate samples via iterative denoising (Algorithm 2).
+
+        Starts from noise x ~ stationary, samples a schedule S, then
+        iteratively denoises by removing k transitions at each step.
+        Optionally applies corrector steps that re-noise and denoise.
+
+        Args:
+            x: Initial noisy data, shape (B, ...).
+            attn_mask: Optional attention mask, shape (B, L).
+            n_T: Target number of denoising steps.
+            stride: Record intermediate samples every stride steps.
+            n_corrector_steps: Number of corrector iterations per step.
+            temperature: Sampling temperature.
+            use_tau: If True, use time-based schedule for step sizes.
+
+        Returns:
+            List of intermediate sample tensors recorded at stride intervals.
+        """
         t = self.t_max * torch.ones(x.shape[0], device=x.device)
         S = sample_n_transitions_cont(self.log_alpha, x[0].flatten().shape[0], t)
         t = t * 0

@@ -1,5 +1,14 @@
-# code adapted from https://github.com/microsoft/evodiff
+"""ByteNet-based convolutional architecture for protein sequence diffusion.
 
+Implements ByteNetLMTimeNew, a dilated causal convolution network with
+time/schedule conditioning via FiLM modulation, for protein sequence
+generation with discrete diffusion.
+
+Reference: "Why Masking Diffusion Works" (NeurIPS 2025).
+Code adapted from https://github.com/microsoft/evodiff
+"""
+
+from __future__ import annotations
 
 import math
 
@@ -22,49 +31,56 @@ def modulate_fused(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) ->
 
 
 class ByteNetLMTimeNew(nn.Module):
-    """Stacked residual blocks from ByteNet paper defined by n_layers
+    """ByteNet language model with time/schedule conditioning for protein diffusion.
+
+    Stacked dilated residual convolution blocks with FiLM modulation from
+    either time embeddings (classical diffusion) or schedule embeddings
+    (SCUD). Adapted from the EvoDiff codebase.
 
     Shape:
        Input: (N, L,)
        input_mask: (N, L, 1), optional
        Output: (N, L, d)
+
+    Args:
+        simple_embed: If True, use a single embedding layer; else embed then project.
+        n_tokens: Number of tokens in the vocabulary.
+        d_aa_emb: Dimension of amino acid embedding (used when simple_embed=False).
+        d_embedding: Dimension of conditioning embedding.
+        d_model: Hidden dimension of the ByteNet blocks.
+        n_layer: Number of dilated residual blocks.
+        kernel_size: Convolution kernel width.
+        r: Base for dilation factor calculation.
+        rank: Rank for compressed weight matrices (None for full rank).
+        n_frozen_embs: Number of frozen embedding rows.
+        padding_idx: Padding token index in vocabulary.
+        causal: If True, use causal convolutions.
+        dropout: Dropout rate.
+        slim: If True, use half dimensions in feed-forward layers.
+        activation: Activation function ('gelu' or 'relu').
+        schedule_conditioning: If True, condition on jump schedule S (SCUD mode).
     """
 
     def __init__(
         self,
-        simple_embed=True,
-        n_tokens=31,
-        d_aa_emb=8,
-        d_embedding=128,
-        d_model=1024,
-        n_layer=16,
-        kernel_size=5,
-        r=128,
-        rank=None,
-        n_frozen_embs=None,
-        padding_idx=None,
-        causal=False,
-        dropout=0.1,
-        slim=True,
-        activation="gelu",
-        schedule_conditioning=True,
-        **kwargs,
-    ):
-        """
-        :param n_tokens: number of tokens in token dictionary
-        :param d_embedding: dimension of embedding
-        :param d_model: dimension to use within ByteNet model, //2 every layer
-        :param n_layers: number of layers of ByteNet block
-        :param kernel_size: the kernel width
-        :param r: used to calculate dilation factor
-        :padding_idx: location of padding token in ordered alphabet
-        :param causal: if True, chooses MaskedCausalConv1d() over MaskedConv1d()
-        :param rank: rank of compressed weight matrices
-        :param n_frozen_embs: number of frozen embeddings
-        :param slim: if True, use half as many dimensions in the NLP as in the CNN
-        :param activation: 'relu' or 'gelu'
-        :param down_embed: if True, have lower dimension for initial embedding than in CNN layers
-        """
+        simple_embed: bool = True,
+        n_tokens: int = 31,
+        d_aa_emb: int = 8,
+        d_embedding: int = 128,
+        d_model: int = 1024,
+        n_layer: int = 16,
+        kernel_size: int = 5,
+        r: int = 128,
+        rank: int | None = None,
+        n_frozen_embs: int | None = None,
+        padding_idx: int | None = None,
+        causal: bool = False,
+        dropout: float = 0.1,
+        slim: bool = True,
+        activation: str = "gelu",
+        schedule_conditioning: bool = True,
+        **kwargs: object,
+    ) -> None:
         super().__init__()
         self.simple_embed = simple_embed
         self.schedule_conditioning = schedule_conditioning
@@ -112,12 +128,23 @@ class ByteNetLMTimeNew(nn.Module):
         self.decoder = PositionFeedForward(d_model, n_tokens)
         self.last_norm = nn.LayerNorm(d_model)
 
-    def forward(self, x, t, input_mask=None, S=None):
-        """
-        :param x: (batch, length)
-        :param y: (batch)
-        :param input_mask: (batch, length, 1)
-        :return: (batch, length,)
+    def forward(
+        self,
+        x: torch.Tensor,
+        t: torch.Tensor,
+        input_mask: torch.Tensor | None = None,
+        S: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Forward pass through the ByteNet with time/schedule conditioning.
+
+        Args:
+            x: Token indices, shape (B, L).
+            t: Diffusion time, shape (B,).
+            input_mask: Attention mask, shape (B, L).
+            S: Schedule tensor for SCUD conditioning, shape (B, L).
+
+        Returns:
+            Logits over vocabulary, shape (B, L, n_tokens).
         """
         x = self.embedder(x)
         if not self.simple_embed:

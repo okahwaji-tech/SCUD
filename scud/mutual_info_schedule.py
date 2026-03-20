@@ -1,6 +1,19 @@
+"""Mutual information-based noise schedule construction.
+
+Computes noise schedules (log_alpha, beta) by inverting a mutual information
+criterion: the schedule is chosen so that MI(x_0; x_t) decreases linearly
+in t. Supports both classical (continuous-time) and SCUD (schedule-conditioned)
+formulations.
+
+Reference: "Why Masking Diffusion Works" (NeurIPS 2025), Section 5.
+"""
+
+from __future__ import annotations
+
 import hashlib
 import math
 import os
+from collections.abc import Callable
 
 import numpy as np
 import torch
@@ -9,14 +22,34 @@ from tqdm import tqdm
 from scud.root_finder import newton_root_finder
 
 
-def hash_matrix(matrix):
+def hash_matrix(matrix: torch.Tensor) -> str:
+    """Compute SHA-256 hash of a tensor for caching purposes.
+
+    Args:
+        matrix: Tensor to hash.
+
+    Returns:
+        Hex digest string.
+    """
     byte_string = matrix.cpu().numpy().tobytes()
     hash_object = hashlib.sha256()
     hash_object.update(byte_string)
     return hash_object.hexdigest()
 
 
-def try_load(func, fname, cache_dir="data/save_alphas/"):
+def try_load(
+    func: Callable[[], torch.Tensor], fname: str, cache_dir: str = "data/save_alphas/"
+) -> torch.Tensor:
+    """Load a cached tensor from disk, or compute and save it.
+
+    Args:
+        func: Zero-argument callable that computes the tensor if not cached.
+        fname: Filename for the cached .npy file.
+        cache_dir: Directory for cached files.
+
+    Returns:
+        The loaded or computed tensor.
+    """
     os.makedirs(cache_dir, exist_ok=True)
     if fname in os.listdir(cache_dir):
         print("Loading alphas. Note: I hope p0 is similar to before!")
@@ -28,7 +61,27 @@ def try_load(func, fname, cache_dir="data/save_alphas/"):
     return val
 
 
-def get_a_b_func_cont(L, p0, **kwargs):
+def get_a_b_func_cont(
+    L: torch.Tensor, p0: torch.Tensor, **kwargs: object
+) -> tuple[
+    Callable[[torch.Tensor], torch.Tensor],
+    Callable[[torch.Tensor], torch.Tensor],
+    Callable[[torch.Tensor], torch.Tensor],
+]:
+    """Construct MI-based noise schedule for classical continuous-time diffusion.
+
+    Inverts the mutual information I(x_0; x_t) = 1 - t criterion by
+    computing the matrix exponential exp(L * alpha) and finding alpha(t)
+    via Newton root finding. Caches results for large vocabularies.
+
+    Args:
+        L: Infinitesimal generator matrix, shape (N, N).
+        p0: Data distribution, shape (N,).
+
+    Returns:
+        Tuple of (log_alpha, beta, mi) functions mapping time tensors to
+        their respective schedule values.
+    """
     N = len(p0)
     ent_p0 = -torch.xlogy(p0, p0).sum()
     evals, V = torch.linalg.eig(L.double())
@@ -100,7 +153,35 @@ def get_a_b_func_cont(L, p0, **kwargs):
     return log_alpha, beta, mi
 
 
-def get_a_b_func_sc(K, p0, precompute_mis=None, second_eval=None, **kwargs):
+def get_a_b_func_sc(
+    K: torch.Tensor,
+    p0: torch.Tensor,
+    precompute_mis: list[float] | torch.Tensor | None = None,
+    second_eval: float | torch.Tensor | None = None,
+    **kwargs: object,
+) -> tuple[
+    Callable[[torch.Tensor], torch.Tensor],
+    Callable[[torch.Tensor], torch.Tensor],
+    Callable[[torch.Tensor], torch.Tensor],
+    torch.Tensor,
+]:
+    """Construct MI-based noise schedule for SCUD (schedule-conditioned diffusion).
+
+    Computes the Poisson-weighted mutual information I(x_0; x_S) where
+    S ~ Poisson(lambda), and inverts I = 1 - t to find the schedule
+    lambda(t). Uses precomputed MI values for each integer n and Newton
+    root finding for inversion.
+
+    Args:
+        K: Transition kernel matrix, shape (N, N).
+        p0: Data distribution, shape (N,).
+        precompute_mis: Optional precomputed MI values for each n.
+        second_eval: Optional second-largest eigenvalue magnitude of K - I.
+
+    Returns:
+        Tuple of (log_alpha, beta, mi, precompute_mis) where the first three
+        are callable schedule functions and precompute_mis can be reused.
+    """
     if second_eval is None:
         L_ish = K.double() - torch.eye(len(K), dtype=torch.float64)
         evals, V = torch.linalg.eig(L_ish)
@@ -178,7 +259,9 @@ def get_a_b_func_sc(K, p0, precompute_mis=None, second_eval=None, **kwargs):
     return log_alpha, beta, mi, precompute_mis
 
 
-def get_a_b_func_mi(mat, p0, type_, **kwargs):
+def get_a_b_func_mi(
+    mat: torch.Tensor, p0: torch.Tensor, type_: str, **kwargs: object
+) -> tuple[Callable[..., torch.Tensor], ...]:
     if type_ == "schedule_condition":
         return get_a_b_func_sc(mat, p0, **kwargs)
     elif type_ == "SEDD":

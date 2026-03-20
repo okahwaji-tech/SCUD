@@ -1,3 +1,17 @@
+"""Base class for continuous-time discrete diffusion models.
+
+Implements shared functionality for all continuous-time diffusion variants
+(SCUD, ClassicalDiffusion, MaskingDiffusion): schedule construction,
+model prediction with optional logistic parameterization, forward-process
+sampling, and checkpoint loading.
+
+Reference: "Why Masking Diffusion Works" (NeurIPS 2025), Section 3.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+
 import torch
 
 from scud.mutual_info_schedule import get_a_b_func_mi
@@ -6,7 +20,16 @@ from .schedule_sample import sample_n_transitions_cont
 from .trainer import DiffusionTrainer
 
 
-def get_betas(schedule_type):
+def get_betas(schedule_type: str) -> Callable[..., tuple[Callable[..., torch.Tensor], ...]]:
+    """Return a factory function that produces log_alpha and beta schedule functions.
+
+    Args:
+        schedule_type: One of 'cos', 'linear', or 'mutual_information'.
+
+    Returns:
+        A callable that, given rate matrix and data distribution, returns
+        (log_alpha, beta) schedule functions.
+    """
     if schedule_type in ["cos", "linear"]:
 
         def get_funcs(L, p0, model="SEDD", scale=1, type_=None):
@@ -26,15 +49,31 @@ def get_betas(schedule_type):
 
 
 class ContinuousTimeDiffusion(DiffusionTrainer):
+    """Base class for continuous-time discrete diffusion models.
+
+    Provides the shared interface and utilities that SCUD, ClassicalDiffusion,
+    and MaskingDiffusion build upon: noise schedule construction, neural
+    network prediction (with optional logistic parameterization), and
+    forward-process time/schedule sampling.
+
+    Args:
+        x0_model_class: Neural network class for the denoiser.
+        nn_params: Keyword arguments passed to x0_model_class constructor.
+        num_classes: Number of discrete token classes.
+        schedule_type: Noise schedule type ('cos', 'linear', 'mutual_information').
+        logistic_pars: If True, use logistic parameterization for predictions.
+        t_max: Maximum diffusion time (slightly less than 1 for stability).
+    """
+
     def __init__(
         self,
-        x0_model_class,
-        nn_params,
+        x0_model_class: type,
+        nn_params: dict[str, object],
         num_classes: int = 10,
-        schedule_type="cos",
-        logistic_pars=False,
-        t_max=0.999,
-        **kwargs,
+        schedule_type: str = "cos",
+        logistic_pars: bool = False,
+        t_max: float = 0.999,
+        **kwargs: object,
     ) -> None:
         super().__init__(**kwargs)
         self.save_hyperparameters(ignore=["x0_model_class"])
@@ -48,13 +87,19 @@ class ContinuousTimeDiffusion(DiffusionTrainer):
         # Precalculate betas
         self.get_beta_func = get_betas(schedule_type)
 
-    def get_stationary(self):
+    def get_stationary(self) -> torch.Tensor:
+        """Return the stationary distribution of the forward process."""
         raise NotImplementedError
 
-    def base_predict(self, x_t, t, attn_mask, S=None):
+    def base_predict(
+        self, x_t: torch.Tensor, t: torch.Tensor, attn_mask: torch.Tensor | None, S: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """Run the denoiser network on noisy data."""
         return self.x0_model(x_t, t, attn_mask, S).to(torch.float32)
 
-    def model_predict(self, x_t, t, attn_mask, S=None):
+    def model_predict(
+        self, x_t: torch.Tensor, t: torch.Tensor, attn_mask: torch.Tensor | None, S: torch.Tensor | None = None
+    ) -> torch.Tensor:
         pred = self.base_predict(x_t, t, attn_mask, S)
         if not self.logistic_pars:
             return pred
@@ -70,13 +115,21 @@ class ContinuousTimeDiffusion(DiffusionTrainer):
             logits = log_cdf_max + torch.log1p(-torch.exp(log_cdf_min - log_cdf_max) + self.eps)
             return logits
 
-    def q_posterior_logits(self, x_0, x_t, t, S=None):
+    def q_posterior_logits(
+        self, x_0: torch.Tensor, x_t: torch.Tensor, t: torch.Tensor, S: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """Compute log-probabilities of the denoising posterior."""
         raise NotImplementedError
 
-    def x_t_sample(self, x_0, t, noise, S=None):
+    def x_t_sample(
+        self, x_0: torch.Tensor, t: torch.Tensor, noise: torch.Tensor, S: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """Sample from the forward process at time t."""
         raise NotImplementedError
 
-    def sample_point(self, x, attn_mask=None, rand_shape=None):
+    def sample_point(
+        self, x: torch.Tensor, attn_mask: torch.Tensor | None = None, rand_shape: int | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         t = torch.rand(x.shape[0], device=x.device) * self.t_max
         S = sample_n_transitions_cont(self.log_alpha, x[0].flatten().shape[0], t)
         S = S.swapaxes(0, 1).reshape(*x.shape).long()
@@ -91,7 +144,9 @@ class ContinuousTimeDiffusion(DiffusionTrainer):
         )
         return t, S, x_t
 
-    def load_state_dict(self, state_dict, strict=False):
+    def load_state_dict(
+        self, state_dict: dict[str, torch.Tensor], strict: bool = False
+    ) -> tuple[list[str], list[str]]:
         # Call the parent class's load_state_dict method
         missing_keys, unexpected_keys = super().load_state_dict(state_dict, strict=False)
 
@@ -138,7 +193,9 @@ class ContinuousTimeDiffusion(DiffusionTrainer):
         return missing_keys, unexpected_keys
 
     @classmethod
-    def load_from_checkpoint(cls, checkpoint_path, map_location=None, **kwargs):
+    def load_from_checkpoint(
+        cls, checkpoint_path: str, map_location: str | torch.device | None = None, **kwargs: object
+    ) -> ContinuousTimeDiffusion:
         print("Loading checkpoint ...")
         checkpoint = torch.load(checkpoint_path, map_location=map_location)
         hparams = checkpoint["hyper_parameters"]

@@ -1,3 +1,14 @@
+"""Classical continuous-time discrete diffusion model.
+
+Implements the standard (non-schedule-conditioned) continuous-time discrete
+diffusion baseline that uses the matrix exponential exp(L * t) as the
+transition operator. Serves as the gamma -> 1 limit of SCUD.
+
+Reference: "Why Masking Diffusion Works" (NeurIPS 2025), Section 3.
+"""
+
+from __future__ import annotations
+
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
@@ -7,16 +18,31 @@ from .utils import convert_to_probs, get_inf_gen, kls
 
 
 class ClassicalDiffusion(ContinuousTimeDiffusion):
+    """Classical continuous-time discrete diffusion (CTDD/SEDD baseline).
+
+    Uses the matrix exponential of the infinitesimal generator L to define
+    transition probabilities, without schedule conditioning. This corresponds
+    to the gamma -> 1 (code convention) limit of SCUD.
+
+    Args:
+        x0_model_class: Neural network class for the denoiser.
+        nn_params: Constructor kwargs for the denoiser network.
+        num_classes: Number of discrete token classes.
+        forward_kwargs: Forward process specification (type, bandwidth, etc.).
+        schedule_type: Noise schedule type.
+        logistic_pars: If True, use logistic parameterization.
+    """
+
     def __init__(
         self,
-        x0_model_class,
-        nn_params,
+        x0_model_class: type,
+        nn_params: dict[str, object],
         num_classes: int = 10,
-        forward_kwargs={"type": "uniform"},
-        schedule_type="cos",
-        logistic_pars=False,
-        **kwargs,
-    ):
+        forward_kwargs: dict[str, object] = {"type": "uniform"},
+        schedule_type: str = "cos",
+        logistic_pars: bool = False,
+        **kwargs: object,
+    ) -> None:
         # Precalculate betas, define model_predict, p_sample
         super().__init__(
             x0_model_class, nn_params, num_classes, schedule_type, logistic_pars, **kwargs
@@ -33,11 +59,11 @@ class ClassicalDiffusion(ContinuousTimeDiffusion):
         self.register_buffer("eigenvectors", eigenvectors)
         self.register_buffer("eigenvectors_inv", eigenvectors_inv)
 
-    def pre_configure_model(self, dataloader):
+    def pre_configure_model(self, dataloader: object) -> None:
         self.calc_p0(dataloader)
         self.log_alpha, self.beta, *_ = self.get_beta_func(self.L.cpu(), self.p0.cpu(), "SEDD")
 
-    def get_stationary(self):
+    def get_stationary(self) -> torch.Tensor:
         evals, evecs = torch.linalg.eig(self.L.T)
         norms_sq = torch.real(evals)
         stationary = evecs[:, torch.argmax(norms_sq)]
@@ -47,8 +73,16 @@ class ClassicalDiffusion(ContinuousTimeDiffusion):
         assert torch.all(stationary >= 0)
         return stationary / stationary.sum()
 
-    def get_trans_mats_mvp(self, t, v):
-        """v is a b...c POSITIVE(!) matrix where L is cd, and t is b"""
+    def get_trans_mats_mvp(self, t: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        """Compute exp(L * log_alpha(t)) @ v via eigendecomposition.
+
+        Args:
+            t: Time values, shape (B,).
+            v: Positive probability vectors, shape (B, ..., C).
+
+        Returns:
+            Result of matrix exponential applied to v, shape (B, ..., C).
+        """
         dv = v.to(dtype=self.eigenvectors.dtype).reshape(v.shape[0], -1, v.shape[-1])
         diag = torch.exp(-self.log_alpha(t)[..., None] * self.eigenvalues)
         dv = dv @ self.eigenvectors
@@ -56,8 +90,16 @@ class ClassicalDiffusion(ContinuousTimeDiffusion):
         dv = dv @ self.eigenvectors_inv
         return F.relu(dv.double()).to(t.dtype).reshape(v.shape)  # negative values are errors
 
-    def get_trans_mats_index(self, t, ind):
-        """ind is a b... matrix of indices up to c where L is cd, and t is b"""
+    def get_trans_mats_index(self, t: torch.Tensor, ind: torch.Tensor) -> torch.Tensor:
+        """Compute rows of exp(L * log_alpha(t)) indexed by ind.
+
+        Args:
+            t: Time values, shape (B,).
+            ind: Integer indices, shape (B, ...), values in [0, C).
+
+        Returns:
+            Transition probabilities, shape (B, ..., C).
+        """
         dind = ind.reshape(ind.shape[0], -1)
         diag = torch.exp(-self.log_alpha(t)[..., None] * self.eigenvalues)
         dv = self.eigenvectors[dind, :]
@@ -65,13 +107,15 @@ class ClassicalDiffusion(ContinuousTimeDiffusion):
         dv = dv @ self.eigenvectors_inv
         return F.relu(dv.double()).to(t.dtype).reshape(ind.shape + (self.num_classes,))
 
-    def get_kl_t1(self, x):
+    def get_kl_t1(self, x: torch.Tensor) -> torch.Tensor:
         t = self.t_max * torch.ones(x.shape[0], device=x.device)
         x_1 = torch.log(self.get_trans_mats_index(t, x) + self.eps)
         kl = kls(x_1, torch.log(self.get_stationary() + self.eps))
         return kl.mean()
 
-    def x_t_sample(self, x_0, t, noise, S):
+    def x_t_sample(
+        self, x_0: torch.Tensor, t: torch.Tensor, noise: torch.Tensor, S: torch.Tensor
+    ) -> torch.Tensor:
         # forward process, x_0 is the clean input.
         probs = self.get_trans_mats_index(t, x_0)
         noise = torch.clip(noise, self.eps, 1.0)
@@ -79,7 +123,9 @@ class ClassicalDiffusion(ContinuousTimeDiffusion):
         x_t = torch.argmax(probs * gumbel_noise, dim=-1)
         return x_t
 
-    def r_posterior(self, x_0, x_t, t, S):  # returns backward inf_gen
+    def r_posterior(
+        self, x_0: torch.Tensor, x_t: torch.Tensor, t: torch.Tensor, S: torch.Tensor | None
+    ) -> torch.Tensor:  # returns backward inf_gen
         softmaxed = convert_to_probs(x_0, self.num_classes)  # bs, ..., num_classes
         p_y = self.get_trans_mats_mvp(t, softmaxed)
         p_xt = p_y.gather(-1, x_t.unsqueeze(-1)).squeeze(-1)
@@ -91,7 +137,9 @@ class ClassicalDiffusion(ContinuousTimeDiffusion):
         bwd_inf_gen.scatter_(-1, x_t.unsqueeze(-1), 0)  # set diag to 0
         return bwd_inf_gen
 
-    def forward(self, x: torch.Tensor, attn_mask=None, *args) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, attn_mask: torch.Tensor | None = None, *args: object
+    ) -> tuple[torch.Tensor, dict[str, float]]:
         t, _, x_t = self.sample_point(x, attn_mask)
         # predict x_0 and prev(x_t)
         predicted_x0_logits = self.model_predict(x_t, t, attn_mask, None).to(torch.float32)
@@ -122,7 +170,16 @@ class ClassicalDiffusion(ContinuousTimeDiffusion):
             "ce_loss": ce_loss.detach().item(),
         }
 
-    def p_sample(self, x, t, attn_mask, noise, delta_t, S=None, temperature=1):
+    def p_sample(
+        self,
+        x: torch.Tensor,
+        t: torch.Tensor,
+        attn_mask: torch.Tensor | None,
+        noise: torch.Tensor,
+        delta_t: float,
+        S: torch.Tensor | None = None,
+        temperature: float = 1,
+    ) -> torch.Tensor:
         # predict prev(x_t) or x_{t-1}
         predicted_x0_logits = self.model_predict(x, t, attn_mask, None) / temperature
         bwd_inf_gen = self.r_posterior(predicted_x0_logits, x, t, None)
@@ -137,7 +194,13 @@ class ClassicalDiffusion(ContinuousTimeDiffusion):
         sample = torch.argmax(trans_mat * gumbel_noise, dim=-1)
         return sample
 
-    def sample_sequence(self, x, attn_mask=None, n_T=200, stride=10):
+    def sample_sequence(
+        self,
+        x: torch.Tensor,
+        attn_mask: torch.Tensor | None = None,
+        n_T: int = 200,
+        stride: int = 10,
+    ) -> list[torch.Tensor]:
         n_T = 1
         steps = 0  ## TODO fix sampling when there are masks
         images = []

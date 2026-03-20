@@ -1,4 +1,15 @@
-# Code is adapted from https://github.com/google-research/google-research/tree/master/d3pm and https://github.com/google-research/vdm
+"""U-Net architecture for image discrete diffusion.
+
+Implements KingmaUNet, a flat (non-downsampling) U-Net with optional
+schedule conditioning via sinusoidal S-embeddings and FiLM modulation.
+Adapted from D3PM and VDM codebases.
+
+Reference: "Why Masking Diffusion Works" (NeurIPS 2025).
+Code adapted from https://github.com/google-research/google-research/tree/master/d3pm
+and https://github.com/google-research/vdm
+"""
+
+from __future__ import annotations
 
 import torch
 import torch.nn.functional as F
@@ -131,31 +142,61 @@ class AttnBlock(nn.Module):
 
 
 class KingmaUNet(nn.Module):
+    """Flat U-Net for image discrete diffusion with optional schedule conditioning.
+
+    A non-downsampling U-Net that processes images with residual blocks and
+    optional self-attention. Supports time embedding, class conditioning, and
+    SCUD schedule conditioning via sinusoidal S-embeddings with FiLM layers.
+
+    Args:
+        n_channel: Number of image channels (1 for MNIST, 3 for CIFAR).
+        N: Number of discrete classes per pixel.
+        s_lengthscale: Lengthscale for schedule sinusoidal embeddings.
+        time_lengthscale: Lengthscale for time sinusoidal embeddings.
+        schedule_conditioning: If True, condition on jump schedule S.
+        s_dim: Dimension of per-pixel schedule embedding.
+        ch: Base channel width.
+        time_embed_dim: Dimension of time embedding.
+        s_embed_dim: Dimension of schedule embedding (for u_inject/learn_nn styles).
+        num_classes: Number of class labels for conditional generation.
+        n_layers: Number of residual blocks in each arm of the U-Net.
+        inc_attn: If True, include self-attention in residual blocks.
+        dropout: Dropout rate.
+        num_heads: Number of attention heads.
+        n_transformers: Number of transformer blocks in the middle.
+        width: Spatial width of the input image.
+        not_logistic_pars: If True, add one-hot skip connection to output.
+        semb_style: Schedule embedding style ('learn_embed', 'learn_nn', 'u_inject').
+        first_mult: If True, apply multiplicative time/schedule modulation to input.
+        input_logits: If True, input is logits instead of integer indices.
+        film: If True, use FiLM (Feature-wise Linear Modulation) in ResNet blocks.
+    """
+
     def __init__(
         self,
-        n_channel=3,
-        N=256,
-        s_lengthscale=50,
-        time_lengthscale=1,
-        schedule_conditioning=False,
-        s_dim=16,
-        ch=128,
-        time_embed_dim=128,
-        s_embed_dim=128,
-        num_classes=1,
-        n_layers=32,
-        inc_attn=False,
-        dropout=0.1,
-        num_heads=1,
-        n_transformers=1,
-        width=32,
-        not_logistic_pars=True,
-        semb_style="learn_embed",  # "learn_nn", "u_inject"
-        first_mult=False,
-        input_logits=False,
-        film=False,
-        **kwargs,
-    ):
+        n_channel: int = 3,
+        N: int = 256,
+        s_lengthscale: float = 50,
+        time_lengthscale: float = 1,
+        schedule_conditioning: bool = False,
+        s_dim: int = 16,
+        ch: int = 128,
+        time_embed_dim: int = 128,
+        s_embed_dim: int = 128,
+        num_classes: int = 1,
+        n_layers: int = 32,
+        inc_attn: bool = False,
+        dropout: float = 0.1,
+        num_heads: int = 1,
+        n_transformers: int = 1,
+        width: int = 32,
+        not_logistic_pars: bool = True,
+        semb_style: str = "learn_embed",  # "learn_nn", "u_inject"
+        first_mult: bool = False,
+        input_logits: bool = False,
+        film: bool = False,
+        **kwargs: object,
+    ) -> None:
         super().__init__()
 
         self.first_mult = first_mult
@@ -306,7 +347,24 @@ class KingmaUNet(nn.Module):
         h = self.conv_out(h)
         return h
 
-    def forward(self, x, t, y=None, S=None):
+    def forward(
+        self,
+        x: torch.Tensor,
+        t: torch.Tensor,
+        y: torch.Tensor | None = None,
+        S: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Forward pass: embed inputs, run U-Net, reshape to per-pixel logits.
+
+        Args:
+            x: Input tensor, shape (B, C, H, W) of integer indices or logits.
+            t: Diffusion time, shape (B,).
+            y: Optional class labels, shape (B,).
+            S: Optional schedule tensor, shape (B, C, H, W).
+
+        Returns:
+            Per-pixel class logits, shape (B, C, H, W, N).
+        """
         B, C, H, W, *_ = x.shape
         if not self.input_logits:
             x_onehot = F.one_hot(x.long(), num_classes=self.N).float()

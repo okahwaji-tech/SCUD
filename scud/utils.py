@@ -1,17 +1,48 @@
+"""Utility functions for discrete diffusion models.
+
+Provides helpers for KL divergence computation, distribution conversion,
+infinitesimal generator construction, schedule sorting, and numerical
+stability. Used throughout the SCUD codebase.
+
+Reference: "Why Masking Diffusion Works" (NeurIPS 2025).
+"""
+
+from __future__ import annotations
+
 import numpy as np
 import torch
 import torch.nn
 import torch.nn.functional as F
 
 
-def _at(a, t, x):
+def _at(a: torch.Tensor, t: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+    """Index into a 3-D tensor using time indices and class indices.
+
+    Args:
+        a: Tensor of shape (T, C, C) to index into.
+        t: 1-D time index tensor of shape (B,).
+        x: Integer class indices, shape (B, ...), values in [0, num_classes).
+
+    Returns:
+        Indexed tensor of shape (B, ..., C).
+    """
     # t is 1-d, x is integer value of 0 to num_classes - 1
     bs = t.shape[0]
     t = t.reshape((bs, *[1] * (x.dim() - 1)))
     return a[t, x, :]
 
 
-def kls(dist1, dist2, eps=None):  # KL of dists on last dim
+def kls(dist1: torch.Tensor, dist2: torch.Tensor, eps: float | None = None) -> torch.Tensor:
+    """Compute KL divergence between two distributions along the last dimension.
+
+    Args:
+        dist1: Logits for the target distribution, shape (..., C).
+        dist2: Logits for the predicted distribution, shape (..., C).
+        eps: Unused, kept for API compatibility.
+
+    Returns:
+        KL divergence per element, shape (...).
+    """
     out = F.kl_div(
         torch.log_softmax(dist2, dim=-1),
         torch.log_softmax(dist1, dim=-1),
@@ -21,7 +52,19 @@ def kls(dist1, dist2, eps=None):  # KL of dists on last dim
     return out
 
 
-def convert_to_distribution(x_0, num_classes, eps):
+def convert_to_distribution(
+    x_0: torch.Tensor, num_classes: int, eps: float
+) -> torch.Tensor:
+    """Convert data to log-probability representation.
+
+    Args:
+        x_0: Input data, either integer class indices or logits.
+        num_classes: Number of discrete classes.
+        eps: Small constant for numerical stability in log.
+
+    Returns:
+        Log-probabilities tensor of shape (..., num_classes).
+    """
     # returns log probs of x_0 as a distribution
     if x_0.dtype == torch.int64 or x_0.dtype == torch.int32:
         x_0_logits = torch.log(torch.nn.functional.one_hot(x_0, num_classes) + eps)
@@ -30,7 +73,16 @@ def convert_to_distribution(x_0, num_classes, eps):
     return x_0_logits
 
 
-def convert_to_probs(x_0, num_classes):
+def convert_to_probs(x_0: torch.Tensor, num_classes: int) -> torch.Tensor:
+    """Convert data to probability representation.
+
+    Args:
+        x_0: Input data, either integer class indices or logits.
+        num_classes: Number of discrete classes.
+
+    Returns:
+        Probability tensor of shape (..., num_classes).
+    """
     # returns probs of x_0 as a distribution. input is either indices or logits
     if x_0.dtype == torch.int64 or x_0.dtype == torch.int32:
         x_0_probs = torch.nn.functional.one_hot(x_0, num_classes)
@@ -39,7 +91,26 @@ def convert_to_probs(x_0, num_classes):
     return x_0_probs
 
 
-def get_inf_gen(forward_kwargs, num_classes, data_dir="data"):
+def get_inf_gen(
+    forward_kwargs: dict[str, object], num_classes: int, data_dir: str = "data"
+) -> torch.Tensor:
+    """Construct the infinitesimal generator matrix L for the forward process.
+
+    Builds the rate matrix that defines the continuous-time Markov chain used
+    as the forward noising process. Supports uniform, Gaussian, and BLOSUM
+    transition structures (Section 3 of the paper).
+
+    Args:
+        forward_kwargs: Dictionary specifying the forward process type and
+            parameters. Must contain 'type' key ('uniform', 'gaussian', or
+            'blosum'). May contain 'bandwidth', 'beta', 'alpha', 'make_sym',
+            'normalize'/'normalized' depending on type.
+        num_classes: Number of discrete classes (vocabulary size).
+        data_dir: Directory containing auxiliary data files (e.g., BLOSUM matrix).
+
+    Returns:
+        Rate matrix L of shape (num_classes, num_classes) with rows summing to zero.
+    """
     if forward_kwargs["type"] == "uniform":
         L = torch.ones(num_classes, num_classes) / (num_classes - 1)
         L.diagonal().fill_(-1)
@@ -133,7 +204,19 @@ def get_inf_gen(forward_kwargs, num_classes, data_dir="data"):
     return L
 
 
-def get_sort_S(S):
+def get_sort_S(
+    S: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Sort a schedule tensor in descending order and return inverse permutation.
+
+    Args:
+        S: Schedule tensor of arbitrary shape.
+
+    Returns:
+        Tuple of (S_sort, sort_indices, unsort_indices) where S_sort is the
+        sorted tensor reshaped to original shape, sort_indices maps original
+        to sorted positions, and unsort_indices inverts the sort.
+    """
     S_flat, sort = torch.sort(S.flatten(), descending=True)
     S_sort = S_flat.reshape(S.shape)
     unsort = torch.zeros_like(sort)
@@ -141,19 +224,31 @@ def get_sort_S(S):
     return S_sort, sort, unsort
 
 
-def get_counts_S_flat(S_flat):
+def get_counts_S_flat(S_flat: torch.Tensor) -> torch.Tensor:
+    """Compute cumulative counts of unique values in a flattened schedule.
+
+    Args:
+        S_flat: 1-D tensor of non-negative integer schedule values.
+
+    Returns:
+        Cumulative count tensor where entry i gives the number of elements >= i.
+    """
     unique, counts = torch.unique(torch.clamp(S_flat, min=0), return_counts=True)
     full_counts = torch.zeros(unique.max() + 1, device=unique.device, dtype=torch.long)
     full_counts[unique] = counts
     return full_counts.flip(0).cumsum(0)
 
 
-def _pad(tokenized, value, dim=2):
-    """
-    Utility function that pads batches to the same length.
+def _pad(tokenized: list[torch.Tensor], value: float, dim: int = 2) -> torch.Tensor:
+    """Pad a list of tokenized sequences to the same length.
 
-    tokenized: list of tokenized sequences
-    value: pad index
+    Args:
+        tokenized: List of tokenized sequence tensors.
+        value: Padding value to fill shorter sequences.
+        dim: Dimensionality of output (2 for indices, 3 for one-hot).
+
+    Returns:
+        Padded tensor of shape (batch_size, max_len) or (batch_size, max_len, C).
     """
     batch_size = len(tokenized)
     max_len = max(len(t) for t in tokenized)
@@ -171,7 +266,18 @@ def _pad(tokenized, value, dim=2):
     return output
 
 
-def sample_index_S(S):
+def sample_index_S(S: torch.Tensor) -> tuple[int, ...]:
+    """Sample a multidimensional index from a schedule tensor as a probability.
+
+    Args:
+        S: Non-negative schedule tensor used as sampling weights.
+
+    Returns:
+        Tuple of integer indices into S.
+
+    Raises:
+        ValueError: If any entry in S is negative.
+    """
     # Flatten the array
     S_flat = S.flatten()
 
@@ -188,7 +294,18 @@ def sample_index_S(S):
     return sampled_index
 
 
-def log1p(x):
+def log1p(x: torch.Tensor) -> torch.Tensor:
+    """Numerically stable log(1 + x) for values near -1.
+
+    Uses an alternative formula for x < -0.7 to avoid catastrophic
+    cancellation in torch.log1p.
+
+    Args:
+        x: Input tensor.
+
+    Returns:
+        log(1 + x) computed with improved numerical stability.
+    """
     result = torch.log1p(x)
     mask = x < -0.7
     if mask.any():

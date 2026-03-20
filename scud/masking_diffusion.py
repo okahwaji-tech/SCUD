@@ -1,3 +1,15 @@
+"""Masking Diffusion model -- a special case of SCUD.
+
+Implements the masking (absorbing-state) variant of discrete diffusion
+where the forward process replaces tokens with a [MASK] token. This is
+shown to be a special case of SCUD with uniform K and gamma = 1/N
+(Section 6.2 of the paper).
+
+Reference: "Why Masking Diffusion Works" (NeurIPS 2025), Section 6.2.
+"""
+
+from __future__ import annotations
+
 import torch
 from tqdm import tqdm
 
@@ -7,15 +19,30 @@ from .utils import kls
 
 
 class MaskingDiffusion(SCUD):
+    """Masking (absorbing-state) discrete diffusion as a SCUD special case.
+
+    Uses a uniform transition kernel K with gamma = 1/N, which makes the
+    forward process equivalent to independently masking each token. The
+    posterior simplifies: S > 1 yields uniform, S == 1 yields the x_0
+    prediction, so S is always treated as binary (masked / unmasked).
+
+    Args:
+        x0_model_class: Neural network class for the denoiser.
+        nn_params: Constructor kwargs for the denoiser network.
+        num_classes: Number of discrete token classes (excluding mask token).
+        schedule_type: Noise schedule type.
+        logistic_pars: If True, use logistic parameterization.
+    """
+
     def __init__(
         self,
-        x0_model_class,
-        nn_params,
+        x0_model_class: type,
+        nn_params: dict[str, object],
         num_classes: int = 10,
-        schedule_type="cos",
-        logistic_pars=False,
-        **kwargs,
-    ):
+        schedule_type: str = "cos",
+        logistic_pars: bool = False,
+        **kwargs: object,
+    ) -> None:
         forward_kwargs = {"type": "uniform"}
         gamma = 1 / num_classes
         if "gamma" in kwargs:
@@ -39,7 +66,9 @@ class MaskingDiffusion(SCUD):
         # so we always assume S==1.
         # in principle we could also speed up sampling by ignoring S>1
 
-    def base_predict(self, x_t, t, attn_mask, S):
+    def base_predict(
+        self, x_t: torch.Tensor, t: torch.Tensor, attn_mask: torch.Tensor | None, S: torch.Tensor
+    ) -> torch.Tensor:
         masked_pos = S > 0
         masked_x_t = torch.where(masked_pos, self.num_classes, x_t)
         masked_x_t = torch.where(
@@ -47,7 +76,9 @@ class MaskingDiffusion(SCUD):
         )  # don't mask pos that are already masked
         return self.x0_model(masked_x_t, t, attn_mask, S=S)[..., :-1]
 
-    def forward(self, x, attn_mask=None):
+    def forward(
+        self, x: torch.Tensor, attn_mask: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, dict[str, float]]:
         t, S, x_t = self.sample_point(x, attn_mask)
         S = (S > 0).long()
         # predict x_0 and prev(x_t)
@@ -80,7 +111,13 @@ class MaskingDiffusion(SCUD):
             "ce_loss": ce_loss.detach().item(),
         }
 
-    def sample_sequence(self, x, attn_mask=None, n_T=200, stride=10):
+    def sample_sequence(
+        self,
+        x: torch.Tensor,
+        attn_mask: torch.Tensor | None = None,
+        n_T: int = 200,
+        stride: int = 10,
+    ) -> list[torch.Tensor]:
         t = self.t_max * torch.ones(x.shape[0], device=x.device)
         t = t * 0 + 1e-6
         S = (1.0 + 0.0 * x).long()  # this is the only line changed

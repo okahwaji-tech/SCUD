@@ -1,8 +1,42 @@
+"""Root-finding algorithms for schedule inversion.
+
+Provides Brent-style and Newton root finders used to invert the mutual
+information schedule, mapping target MI values to the corresponding
+log-alpha (noise level) parameter.
+
+Reference: "Why Masking Diffusion Works" (NeurIPS 2025), Section 5.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+
 import torch
 
 
-def root_finder(func, x0, x1, ts, max_iter=100, tol=1e-12):
-    """Variation on Brentq"""
+def root_finder(
+    func: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+    x0: float,
+    x1: float,
+    ts: torch.Tensor,
+    max_iter: int = 100,
+    tol: float = 1e-12,
+) -> torch.Tensor:
+    """Vectorized Brent-style root finder combining bisection and secant methods.
+
+    Finds x such that func(x, ts) = 0 for each element of ts.
+
+    Args:
+        func: Function f(x, t) -> residual, operating element-wise.
+        x0: Left bracket for all roots.
+        x1: Right bracket for all roots.
+        ts: Target values tensor.
+        max_iter: Maximum number of iterations.
+        tol: Convergence tolerance.
+
+    Returns:
+        Tensor of roots, NaN where convergence failed.
+    """
 
     def secant_step(x0, x1, f0, f1):
         return x1 - f1 * (x1 - x0) / (
@@ -46,8 +80,31 @@ def root_finder(func, x0, x1, ts, max_iter=100, tol=1e-12):
 
 
 def newton_root_finder(
-    func, x0, ts, min_x=torch.tensor(1e-8), max_iter=1000, tol=1e-12, print_=False
-):
+    func: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+    x0: float,
+    ts: torch.Tensor,
+    min_x: torch.Tensor = torch.tensor(1e-8),
+    max_iter: int = 1000,
+    tol: float = 1e-12,
+    print_: bool = False,
+) -> torch.Tensor:
+    """Vectorized Newton root finder with automatic differentiation.
+
+    Finds x such that func(x, ts) = 0 for each element of ts, using
+    torch.autograd to compute derivatives.
+
+    Args:
+        func: Function f(x, t) -> residual, must be differentiable w.r.t. x.
+        x0: Initial guess for all roots.
+        ts: Target values tensor.
+        min_x: Minimum allowed x value (clamp).
+        max_iter: Maximum number of iterations.
+        tol: Convergence tolerance.
+        print_: If True, print convergence diagnostics.
+
+    Returns:
+        Tensor of roots with the same shape as ts.
+    """
     ts = ts.detach()
     x = x0 * torch.ones_like(ts).double()
     x = torch.maximum(x, min_x)

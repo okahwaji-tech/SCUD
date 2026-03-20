@@ -1,3 +1,14 @@
+"""PyTorch Lightning training infrastructure for discrete diffusion models.
+
+Provides DiffusionTrainer, the Lightning base class that handles training
+and validation loops, logging, sample generation (images/text/GIFs), and
+optimizer configuration. Subclassed by ContinuousTimeDiffusion.
+
+Reference: "Why Masking Diffusion Works" (NeurIPS 2025).
+"""
+
+from __future__ import annotations
+
 import tempfile
 
 import numpy as np
@@ -11,7 +22,13 @@ from torchvision.utils import make_grid
 from tqdm import tqdm
 
 
-def get_gif(sample_x, sample_a, model, gen_trans_step, batch_size):
+def get_gif(
+    sample_x: torch.Tensor,
+    sample_a: torch.Tensor | None,
+    model: DiffusionTrainer,
+    gen_trans_step: int,
+    batch_size: int,
+) -> tuple[str | None, str | None]:
     # save images
     p = model.get_stationary()
     samples = torch.multinomial(
@@ -54,7 +71,14 @@ def get_gif(sample_x, sample_a, model, gen_trans_step, batch_size):
         return None, None
 
 
-def get_text(sample_x, sample_a, model, gen_trans_step, batch_size, tokenizer):
+def get_text(
+    sample_x: torch.Tensor,
+    sample_a: torch.Tensor | None,
+    model: DiffusionTrainer,
+    gen_trans_step: int,
+    batch_size: int,
+    tokenizer: object,
+) -> tuple[list[str], list[list[str]]] | None:
     # save images
     p = model.get_stationary()
     samples = torch.multinomial(
@@ -94,18 +118,35 @@ def get_text(sample_x, sample_a, model, gen_trans_step, batch_size, tokenizer):
 
 
 class DiffusionTrainer(pl.LightningModule):
+    """Base Lightning module for training discrete diffusion models.
+
+    Handles the training/validation loop, optimizer configuration, gradient
+    clipping, data distribution estimation, and sample generation for
+    visualization (images as GIFs, text sequences).
+
+    Args:
+        lr: Learning rate.
+        gen_trans_step: Number of denoising steps for sample generation.
+        n_gen_images: Number of images/samples to generate for validation logging.
+        grad_clip_val: Maximum gradient norm for clipping.
+        weight_decay: AdamW weight decay.
+        seed: Random seed.
+        n_stat_samples: Number of samples used to estimate data distribution p0.
+        tokenizer: Optional tokenizer for text/protein decoding during logging.
+    """
+
     def __init__(
         self,
-        lr=1e-3,
-        gen_trans_step=1000,
-        n_gen_images=4,
-        grad_clip_val=1,
-        weight_decay=0,
-        seed=0,
-        n_stat_samples=2e6,
-        tokenizer=None,
-        **kwargs,
-    ):
+        lr: float = 1e-3,
+        gen_trans_step: int = 1000,
+        n_gen_images: int = 4,
+        grad_clip_val: float = 1,
+        weight_decay: float = 0,
+        seed: int = 0,
+        n_stat_samples: float = 2e6,
+        tokenizer: object | None = None,
+        **kwargs: object,
+    ) -> None:
         super().__init__()
         self.save_hyperparameters(ignore=["tokenizer"])
         self.lr = lr
@@ -119,16 +160,19 @@ class DiffusionTrainer(pl.LightningModule):
         self.n_stat_samples = n_stat_samples
         self.tokenizer = tokenizer
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, dict[str, float]]:
+        """Compute the training loss. Must be overridden by subclasses."""
         raise NotImplementedError
 
-    def get_kl_t1(self, x):
+    def get_kl_t1(self, x: torch.Tensor) -> torch.Tensor:
+        """Compute KL divergence at t=1 (terminal time). Must be overridden."""
         raise NotImplementedError
 
-    def pre_configure_model(self, dataloader):
+    def pre_configure_model(self, dataloader: object) -> None:
+        """Hook for model setup that requires data (e.g., schedule calibration)."""
         pass
 
-    def calc_p0(self, dataloader):
+    def calc_p0(self, dataloader: object) -> None:
         # get stationary dist
         p0 = torch.ones(self.num_classes)
         pbar = tqdm(total=self.n_stat_samples)
@@ -151,7 +195,7 @@ class DiffusionTrainer(pl.LightningModule):
         p0 = p0 / p0.sum()
         self.p0 = p0
 
-    def training_step(self, batch, batch_idx):
+    def training_step(self, batch: object, batch_idx: int) -> torch.Tensor:
         if isinstance(batch, tuple):  # protein datasets
             x, attn_mask = batch
         elif isinstance(batch, dict):  # text datasets
@@ -168,7 +212,7 @@ class DiffusionTrainer(pl.LightningModule):
         self.log("train_ce_loss", info["ce_loss"], sync_dist=True)
         return loss
 
-    def validation_step(self, batch, batch_idx):
+    def validation_step(self, batch: object, batch_idx: int) -> dict[str, float]:
         if isinstance(batch, tuple):  # protein datasets
             x, attn_mask = batch
         elif isinstance(batch, dict):  # text datasets
@@ -233,11 +277,11 @@ class DiffusionTrainer(pl.LightningModule):
                                 }
                             )
 
-    def on_before_optimizer_step(self, optimizer):
+    def on_before_optimizer_step(self, optimizer: torch.optim.Optimizer) -> None:
         # Gradient clipping
         torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=self.grad_clip_val)
 
-    def configure_optimizers(self):
+    def configure_optimizers(self) -> dict[str, object]:
         optimizer = torch.optim.AdamW(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         return {
             "optimizer": optimizer,
