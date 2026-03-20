@@ -15,12 +15,14 @@ def train(cfg: DictConfig) -> None:
 @hydra.main(version_base=None, config_path="../configs", config_name="basic")
 def sample(cfg: DictConfig) -> None:
     """Generate samples from a trained checkpoint."""
-    raise NotImplementedError(
-        "Sampling CLI not yet implemented. Use model.sample_sequence() directly."
-    )
+    from scud._sample import run_sampling
+
+    run_sampling(cfg)
 
 
 @hydra.main(version_base=None, config_path="../configs", config_name="basic")
 def evaluate(cfg: DictConfig) -> None:
     """Evaluate a trained checkpoint on test data."""
-    raise NotImplementedError("Evaluation CLI not yet implemented.")
+    from scud._evaluate import run_evaluation
+
+    run_evaluation(cfg)
