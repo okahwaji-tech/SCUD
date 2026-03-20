@@ -1,12 +1,14 @@
+import math
+
 import numpy as np
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
-import math
 
-from .utils import kls, convert_to_probs, get_inf_gen
-from .schedule_sample import sample_n_transitions_cont
 from .continuous_time_diffusion import ContinuousTimeDiffusion
+from .schedule_sample import sample_n_transitions_cont
+from .utils import convert_to_probs, get_inf_gen, kls
+
 
 class SCUD(ContinuousTimeDiffusion):
     MAX_K_POWERS = 5000
@@ -17,16 +19,18 @@ class SCUD(ContinuousTimeDiffusion):
         x0_model_class,
         nn_params,
         num_classes: int = 10,
-        forward_kwargs={"type":"uniform"},
+        forward_kwargs={"type": "uniform"},
         schedule_type="cos",
         gamma=0,
         logistic_pars=False,
-        **kwargs
+        **kwargs,
     ):
         # Precalculate betas, define model_predict, p_sample
-        super().__init__(x0_model_class, nn_params, num_classes, schedule_type, logistic_pars, **kwargs)
-        self.save_hyperparameters(ignore=['x0_model_class'])
-        assert gamma >= 0 and gamma < 1 # full schedule and classical resp.
+        super().__init__(
+            x0_model_class, nn_params, num_classes, schedule_type, logistic_pars, **kwargs
+        )
+        self.save_hyperparameters(ignore=["x0_model_class"])
+        assert gamma >= 0 and gamma < 1  # full schedule and classical resp.
 
         # Precalculate Ls
         L = get_inf_gen(forward_kwargs, num_classes)
@@ -37,26 +41,31 @@ class SCUD(ContinuousTimeDiffusion):
         # Relationship: code_gamma = 1 - paper_gamma.
         # gamma=0 here -> rate=r* (slowest events, most schedule info) = paper's gamma=1
         # gamma->1 here -> rate->inf (fastest events, classical diffusion) = paper's gamma->0
-        rate = - (L.diagonal().min()) / (1-gamma) # L^* in sec 6.6 of the notes
+        rate = -(L.diagonal().min()) / (1 - gamma)  # L^* in sec 6.6 of the notes
         K = L / rate + torch.eye(num_classes)
         self.rate = rate
         eigenvalues, eigenvectors = torch.linalg.eig(K.double())
-        eigenvalues[torch.real(eigenvalues) > 1-self.eps] = 1
+        eigenvalues[torch.real(eigenvalues) > 1 - self.eps] = 1
         eigenvectors_inv = torch.linalg.inv(eigenvectors)
         self.register_buffer("eigenvalues", eigenvalues)
         self.register_buffer("eigenvectors", eigenvectors)
         self.register_buffer("eigenvectors_inv", eigenvectors_inv)
-        
+
         # Precalculate K_powers
-        assert (num_classes <= self.MAX_CLASSES_FOR_PRECOMPUTE and forward_kwargs['type'] != "bert_embed")
+        assert (
+            num_classes <= self.MAX_CLASSES_FOR_PRECOMPUTE
+            and forward_kwargs["type"] != "bert_embed"
+        )
         K_powers = torch.stack([torch.linalg.matrix_power(K, i) for i in range(self.MAX_K_POWERS)])
         self.register_buffer("K", K)
         self.register_buffer("K_powers", K_powers)
 
     def pre_configure_model(self, dataloader):
         self.calc_p0(dataloader)
-        self.log_alpha, self.beta, *_ = self.get_beta_func(self.K.cpu(), self.p0.cpu(), type_='schedule_condition', scale=self.rate.cpu())
-    
+        self.log_alpha, self.beta, *_ = self.get_beta_func(
+            self.K.cpu(), self.p0.cpu(), type_="schedule_condition", scale=self.rate.cpu()
+        )
+
     def get_stationary(self):
         evals, evecs = torch.linalg.eig(self.K.T)
         norms_sq = torch.real(evals * evals.conj())
@@ -69,14 +78,14 @@ class SCUD(ContinuousTimeDiffusion):
         return stationary / stationary.sum()
 
     def get_trans_mats_mvp(self, Smk, v):
-        """ v is a ...c matrix where K is cd, and Smk is ... """
+        """v is a ...c matrix where K is cd, and Smk is ..."""
         dv = v.to(dtype=self.eigenvectors.dtype).reshape(-1, v.shape[-1])
         diag = self.eigenvalues ** F.relu(Smk.flatten()[..., None])
         dv = dv @ self.eigenvectors
         dv = dv * diag
         dv = dv @ self.eigenvectors_inv
         return F.relu(dv.double()).to(torch.float32).reshape(v.shape)
-    
+
     def get_kl_t1(self, x):
         # sample S
         t = self.t_max * torch.ones(x.shape[0], device=x.device)
@@ -84,7 +93,7 @@ class SCUD(ContinuousTimeDiffusion):
         S = S.swapaxes(0, 1).reshape(*x.shape).long()
         softmaxed = convert_to_probs(x, self.num_classes)  # bs, ..., num_classes
         trans = self.get_trans_mats_mvp(S, softmaxed)
-        x_1 = torch.log(trans+self.eps)
+        x_1 = torch.log(trans + self.eps)
         kl = kls(x_1, torch.log(self.get_stationary() + self.eps))
         return kl.mean()
 
@@ -92,32 +101,36 @@ class SCUD(ContinuousTimeDiffusion):
         # forward process, x_0 is the clean input.
         probs = self.K_powers[S, x_0, :]
         noise = torch.clip(noise, self.eps, 1.0)
-        gumbel_noise = 1/(-torch.log(noise))
+        gumbel_noise = 1 / (-torch.log(noise))
         x_t = torch.argmax(probs * gumbel_noise, dim=-1)
         return x_t
 
     def q_posterior_logits(self, x_0, x_t, t, S, k=1, log=True):
-        """ probs for x_{t-k}|x_t, x_0 """
-        fact1 = self.K_powers.swapaxes(1, 2)[k, x_t, :] # x_t | x_{t-1}
-        softmaxed = convert_to_probs(x_0, self.num_classes) # bs, ..., num_classes
-        fact2 = self.get_trans_mats_mvp(S - k, softmaxed) # x_{t-1} | x_{0}
-        assert torch.all(fact1 >=0) and torch.all(fact2 >=0)
+        """probs for x_{t-k}|x_t, x_0"""
+        fact1 = self.K_powers.swapaxes(1, 2)[k, x_t, :]  # x_t | x_{t-1}
+        softmaxed = convert_to_probs(x_0, self.num_classes)  # bs, ..., num_classes
+        fact2 = self.get_trans_mats_mvp(S - k, softmaxed)  # x_{t-1} | x_{0}
+        assert torch.all(fact1 >= 0) and torch.all(fact2 >= 0)
         if log:
             return torch.log(fact1 + self.eps) + torch.log(fact2 + self.eps)
         else:
             return fact1 * fact2
 
-    def forward(self, x, attn_mask=None,):
+    def forward(
+        self,
+        x,
+        attn_mask=None,
+    ):
         t, S, x_t = self.sample_point(x, attn_mask)
         # predict x_0 and prev(x_t)
         predicted_x0_logits = self.model_predict(x_t, t, attn_mask, S).to(torch.float32)
         true_q_posterior_logits = self.q_posterior_logits(x, x_t, t, S)
         pred_q_posterior_logits = self.q_posterior_logits(predicted_x0_logits, x_t, t, S)
         # get kls and loss
-        kl = kls(true_q_posterior_logits, pred_q_posterior_logits) # shape x
+        kl = kls(true_q_posterior_logits, pred_q_posterior_logits)  # shape x
         if attn_mask is not None:
             kl = kl * attn_mask
-        weight = - self.beta(t) / self.log_alpha(t)
+        weight = -self.beta(t) / self.log_alpha(t)
         weight = (S.swapaxes(0, -1) * weight).swapaxes(0, -1)
         vb_loss = (kl * weight).mean() * self.t_max
         if attn_mask is not None:
@@ -126,7 +139,7 @@ class SCUD(ContinuousTimeDiffusion):
         # Also calculate cross entropy loss
         predicted_x0_logits = predicted_x0_logits.flatten(start_dim=0, end_dim=-2)
         x = x.flatten(start_dim=0, end_dim=-1)
-        ce_loss = torch.nn.CrossEntropyLoss(reduction='none')(predicted_x0_logits, x)
+        ce_loss = torch.nn.CrossEntropyLoss(reduction="none")(predicted_x0_logits, x)
         if attn_mask is not None:
             ce_loss = (ce_loss * attn_mask.flatten()).sum() / attn_mask.sum()
         else:
@@ -137,31 +150,32 @@ class SCUD(ContinuousTimeDiffusion):
             "ce_loss": ce_loss.detach().item(),
         }
 
-    
     def p_sample(self, x, t, attn_mask, noise, S=None, k=1, temperature=1):
         # predict prev(x_t) or x_{t-1}
         predicted_x0_logits = self.model_predict(x, t, attn_mask, S) / temperature
-        pred_q_posterior_logits = self.q_posterior_logits(predicted_x0_logits, x, t, S, k=k, log=False)
+        pred_q_posterior_logits = self.q_posterior_logits(
+            predicted_x0_logits, x, t, S, k=k, log=False
+        )
         # sample
         noise = torch.clip(noise, self.eps, 1.0)
         gumbel_noise = 1 / (-torch.log(noise))
-        sample = torch.argmax(
-            pred_q_posterior_logits * gumbel_noise, dim=-1
-        )
+        sample = torch.argmax(pred_q_posterior_logits * gumbel_noise, dim=-1)
         return sample
 
     def corrector_sample(self, x, t, attn_mask, noise, S=None, k=1, temperature=1):
         # predict prev(x_t) or x_{t-1}
         predicted_x0_logits = self.model_predict(x, t, attn_mask, S) / temperature
-        pred_q_posterior_logits = self.q_posterior_logits(predicted_x0_logits, x, t, S, k=k, log=False)
+        pred_q_posterior_logits = self.q_posterior_logits(
+            predicted_x0_logits, x, t, S, k=k, log=False
+        )
         # K'_x,.K_.,. denoises and then renoises immediately
-        sample_logits = torch.einsum('...i,...ij->...j',pred_q_posterior_logits, self.K_powers[k])
+        sample_logits = torch.einsum("...i,...ij->...j", pred_q_posterior_logits, self.K_powers[k])
         # sample
         noise = torch.clip(noise, self.eps, 1.0)
         gumbel_noise = 1 / (-torch.log(noise))
         sample = torch.argmax(sample_logits * gumbel_noise, dim=-1)
         return sample
-    
+
     def _build_denoising_schedule(self, S, x, total_steps, n_T, trans_step, use_tau):
         """Construct the ks tensor: schedule of how many events to denoise at each step per dimension."""
         ks = torch.zeros(
@@ -170,26 +184,23 @@ class SCUD(ContinuousTimeDiffusion):
         for b in range(len(x)):
             # count how many in each bin
             if use_tau:
-                ts = torch.linspace(
-                    0, self.t_max, total_steps + 1, device=S.device
-                ).to(torch.float32)
+                ts = torch.linspace(0, self.t_max, total_steps + 1, device=S.device).to(
+                    torch.float32
+                )
                 weights = -self.log_alpha(ts)
                 diffs = weights[1:] - weights[:-1]
                 n_steps = torch.bincount(
                     torch.multinomial(diffs, num_samples=S[b].sum(), replacement=True),
-                    None, n_T,
+                    None,
+                    n_T,
                 )
                 n_steps = torch.cumsum(n_steps, -1)
-                n_steps = torch.cat(
-                    [torch.zeros_like(n_steps[[0]]), n_steps], axis=-1
-                ).long()
+                n_steps = torch.cat([torch.zeros_like(n_steps[[0]]), n_steps], axis=-1).long()
                 assert n_steps[-1] == S[b].sum()
             else:
                 n_steps = trans_step * torch.ones(total_steps, device=S.device).to(torch.float32)
                 n_steps = torch.cumsum(n_steps, -1)
-                n_steps = torch.cat(
-                    [torch.zeros_like(n_steps[[0]]), n_steps], axis=-1
-                ).long()
+                n_steps = torch.cat([torch.zeros_like(n_steps[[0]]), n_steps], axis=-1).long()
                 assert n_steps[-1] >= S[b].sum()
 
             indices = torch.argwhere(S[b].flatten() > 0)[:, 0]
@@ -209,8 +220,20 @@ class SCUD(ContinuousTimeDiffusion):
         assert torch.all(ks.sum(1) == S.reshape(len(x), -1))
         return ks
 
-    def _run_denoising_loop(self, x, S, ks, t, attn_mask, n_corrector_steps,
-                            temperature, trans_step, trans_corrector_k, stride, images):
+    def _run_denoising_loop(
+        self,
+        x,
+        S,
+        ks,
+        t,
+        attn_mask,
+        n_corrector_steps,
+        temperature,
+        trans_step,
+        trans_corrector_k,
+        stride,
+        images,
+    ):
         """Run the denoising loop, iterating through steps and calling p_sample/corrector_sample."""
         steps = 0
         n_steps = torch.tensor([S[b].sum() for b in range(len(S))]).max().item()
@@ -222,17 +245,24 @@ class SCUD(ContinuousTimeDiffusion):
 
             # predict what comes next
             x = self.p_sample(
-                x, t, attn_mask,
+                x,
+                t,
+                attn_mask,
                 torch.rand((*x.shape, self.num_classes), device=x.device),
-                S, k=k, temperature=temperature,
+                S,
+                k=k,
+                temperature=temperature,
             )
             assert torch.all(S_temp <= S)
             S = S_temp
             for l in range(n_corrector_steps):
                 x = self.corrector_sample(
-                    x, t, attn_mask,
+                    x,
+                    t,
+                    attn_mask,
                     torch.rand((*x.shape, self.num_classes), device=x.device),
-                    S, k=torch.minimum(S, torch.tensor(trans_corrector_k)),
+                    S,
+                    k=torch.minimum(S, torch.tensor(trans_corrector_k)),
                     temperature=temperature,
                 )
             pbar.update(trans_step)
@@ -245,8 +275,16 @@ class SCUD(ContinuousTimeDiffusion):
             images.append(x)
         return images
 
-    def sample_sequence(self, x, attn_mask=None, n_T=200, stride=10,
-                        n_corrector_steps=10, temperature=1, use_tau=False):
+    def sample_sequence(
+        self,
+        x,
+        attn_mask=None,
+        n_T=200,
+        stride=10,
+        n_corrector_steps=10,
+        temperature=1,
+        use_tau=False,
+    ):
         t = self.t_max * torch.ones(x.shape[0], device=x.device)
         S = sample_n_transitions_cont(self.log_alpha, x[0].flatten().shape[0], t)
         t = t * 0
@@ -260,6 +298,15 @@ class SCUD(ContinuousTimeDiffusion):
 
         ks = self._build_denoising_schedule(S, x, total_steps, n_T, trans_step, use_tau)
         return self._run_denoising_loop(
-            x, S, ks, t, attn_mask, n_corrector_steps,
-            temperature, trans_step, trans_corrector_k, stride, images,
+            x,
+            S,
+            ks,
+            t,
+            attn_mask,
+            n_corrector_steps,
+            temperature,
+            trans_step,
+            trans_corrector_k,
+            stride,
+            images,
         )

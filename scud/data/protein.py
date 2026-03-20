@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import numpy as np
 import torch
+from evodiff.utils import Tokenizer
+from sequence_models.datasets import UniRefDataset
 from torch.utils.data import DataLoader
 
-from evodiff.utils import Tokenizer
 from scud.utils import _pad
-from sequence_models.datasets import UniRefDataset
 
 protein_data_name_dict: dict[str, None] = {"uniref50": None}
 
@@ -21,17 +21,9 @@ def get_protein_dataloaders(
     max_len = 1024
     tokenizer = Tokenizer()
     print("Getting Uniref.")
-    data_dir = (
-        cfg.data.data_dir
-        if hasattr(cfg.data, "data_dir")
-        else "data/uniref_2020/uniref50/"
-    )
-    train_dataset = UniRefDataset(
-        data_dir, "train", structure=False, max_len=max_len
-    )
-    test_dataset = UniRefDataset(
-        data_dir, "test", structure=False, max_len=max_len
-    )
+    data_dir = cfg.data.data_dir if hasattr(cfg.data, "data_dir") else "data/uniref_2020/uniref50/"
+    train_dataset = UniRefDataset(data_dir, "train", structure=False, max_len=max_len)
+    test_dataset = UniRefDataset(data_dir, "test", structure=False, max_len=max_len)
 
     def mask_pad(
         tokenized: torch.Tensor,

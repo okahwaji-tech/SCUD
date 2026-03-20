@@ -8,7 +8,6 @@ import json
 import os
 import re
 import shutil
-import typing
 import urllib
 import zipfile
 
@@ -97,7 +96,7 @@ def lm1b_detokenizer(x: str) -> str:
     x = x.replace(" : ", ": ")
     x = x.replace(" ; ", "; ")
     x = x.replace(" / ", "/")
-    x = re.sub(r'\" ([^\"]+) \"', r'"\1"', x)
+    x = re.sub(r"\" ([^\"]+) \"", r'"\1"', x)
     x = re.sub(r"\' ([^\']+) \'", r"'\1'", x)
     x = re.sub(r"\( ([^\(\)]+) \)", r"(\1)", x)
     x = re.sub(r"\[ ([^\[\]]+) \]", r"[\1]", x)
@@ -163,7 +162,7 @@ class Text8Tokenizer(transformers.PreTrainedTokenizer):
     def vocab_size(self) -> int:
         return len(self._vocab_str_to_int)
 
-    def _tokenize(self, text: str, **kwargs: object) -> typing.List[str]:
+    def _tokenize(self, text: str, **kwargs: object) -> list[str]:
         return list(text.lower())
 
     def _convert_token_to_id(self, token: str) -> int:
@@ -175,7 +174,7 @@ class Text8Tokenizer(transformers.PreTrainedTokenizer):
     def convert_tokens_to_string(self, tokens: list[str]) -> str:
         return "".join(tokens)
 
-    def get_vocab(self) -> typing.Dict[str, int]:
+    def get_vocab(self) -> dict[str, int]:
         return self._vocab_str_to_int
 
 
@@ -184,7 +183,7 @@ class Text8Tokenizer(transformers.PreTrainedTokenizer):
 # ---------------------------------------------------------------------------
 
 
-def get_lambada_test_dataset() -> "datasets.Dataset":
+def get_lambada_test_dataset() -> datasets.Dataset:
     url = "https://openaipublic.blob.core.windows.net/gpt-2/data/lambada_test.jsonl"
 
     def read_jsonl_to_list(url: str) -> list[dict[str, str]]:
@@ -209,7 +208,7 @@ def get_text8_dataset(
     max_seq_length: int = 256,
     drop_last: bool = True,
     crop_train: bool = False,
-) -> "datasets.DatasetDict":
+) -> datasets.DatasetDict:
     """Adapted from:
     https://github.com/google-research/google-research/blob/master/d3pm/text/datasets.py#L344
 
@@ -235,9 +234,7 @@ def get_text8_dataset(
     else:
         cache_dir = f"{cache_dir}/text8-crop-train"
     split_names = ["train", "validation", "test"]
-    if not all(
-        [fsspec_exists(os.path.join(cache_dir, split)) for split in split_names]
-    ):
+    if not all([fsspec_exists(os.path.join(cache_dir, split)) for split in split_names]):
         # Check if raw data exists
         raw_cache_dir = os.path.join(cache_dir, "raw_data")
         if not all(
@@ -248,11 +245,9 @@ def get_text8_dataset(
         ):
             if not fsspec_exists(os.path.join(raw_cache_dir, "text8.zip")):
                 fsspec_mkdirs(raw_cache_dir, exist_ok=True)
-                LOGGER.info("Downloading text8 from URL {}.".format(url))
+                LOGGER.info(f"Downloading text8 from URL {url}.")
                 with urllib.request.urlopen(url) as in_stream:
-                    with open(
-                        os.path.join(raw_cache_dir, "text8.zip"), "wb"
-                    ) as out_file:
+                    with open(os.path.join(raw_cache_dir, "text8.zip"), "wb") as out_file:
                         shutil.copyfileobj(in_stream, out_file)
 
             with _fsspec.open(os.path.join(raw_cache_dir, "text8.zip"), "rb") as f:
@@ -321,9 +316,7 @@ def _group_texts(
     _values: list[list[int]] = []
     _attn_masks: list[torch.Tensor] = []
     for i in range(0, total_length, new_block_size):
-        _values.append(
-            [bos] + concatenated_examples[i : i + new_block_size] + [eos]
-        )
+        _values.append([bos] + concatenated_examples[i : i + new_block_size] + [eos])
         _attn_masks.append(torch.ones(block_size))
     result["input_ids"] = _values
     result["attention_mask"] = _attn_masks
@@ -332,14 +325,14 @@ def _group_texts(
 
 def get_dataset(
     dataset_name: str,
-    tokenizer: "transformers.PreTrainedTokenizer",
+    tokenizer: transformers.PreTrainedTokenizer,
     wrap: bool,
     mode: str,
     cache_dir: str,
     block_size: int = 1024,
     num_proc: int = len(os.sched_getaffinity(0)),
     streaming: bool = False,
-) -> "datasets.Dataset":
+) -> datasets.Dataset:
     if wrap:
         filename = f"{dataset_name}_{mode}_bs{block_size}_wrapped.dat"
     else:
@@ -357,13 +350,9 @@ def get_dataset(
         block_size *= 2
 
     if dataset_name == "wikitext103":
-        dataset = datasets.load_dataset(
-            "wikitext", name="wikitext-103-raw-v1", cache_dir=cache_dir
-        )
+        dataset = datasets.load_dataset("wikitext", name="wikitext-103-raw-v1", cache_dir=cache_dir)
     elif dataset_name == "wikitext2":
-        dataset = datasets.load_dataset(
-            "wikitext", name="wikitext-2-raw-v1", cache_dir=cache_dir
-        )
+        dataset = datasets.load_dataset("wikitext", name="wikitext-2-raw-v1", cache_dir=cache_dir)
     elif dataset_name == "ptb":
         dataset = datasets.load_dataset("ptb_text_only", cache_dir=cache_dir)
     elif dataset_name == "lambada":
@@ -372,9 +361,7 @@ def get_dataset(
         assert wrap
         dataset = get_text8_dataset(cache_dir, max_seq_length=block_size)
     elif dataset_name == "text8-crop":
-        dataset = get_text8_dataset(
-            cache_dir, max_seq_length=block_size, crop_train=True
-        )
+        dataset = get_text8_dataset(cache_dir, max_seq_length=block_size, crop_train=True)
     elif dataset_name == "openwebtext-train":
         dataset = datasets.load_dataset(
             "openwebtext",
@@ -487,9 +474,7 @@ def get_dataset(
         return tokens
 
     if streaming:
-        tokenized_dataset = data.map(
-            preprocess_and_tokenize, batched=True, desc="Tokenizing"
-        )
+        tokenized_dataset = data.map(preprocess_and_tokenize, batched=True, desc="Tokenizing")
     else:
         tokenized_dataset = data.map(
             preprocess_and_tokenize,
@@ -513,13 +498,9 @@ def get_dataset(
         tokenized_dataset.save_to_disk(_path)
         return tokenized_dataset.with_format("torch")
 
-    group_texts = functools.partial(
-        _group_texts, block_size=block_size, bos=BOS, eos=EOS
-    )
+    group_texts = functools.partial(_group_texts, block_size=block_size, bos=BOS, eos=EOS)
     if streaming:
-        chunked_dataset = tokenized_dataset.map(
-            group_texts, batched=True, desc="Grouping"
-        )
+        chunked_dataset = tokenized_dataset.map(group_texts, batched=True, desc="Grouping")
     else:
         chunked_dataset = tokenized_dataset.map(
             group_texts,
@@ -538,7 +519,7 @@ def get_dataset(
 # ---------------------------------------------------------------------------
 
 
-def get_tokenizer(config: object) -> "transformers.PreTrainedTokenizer":
+def get_tokenizer(config: object) -> transformers.PreTrainedTokenizer:
     if config.data.tokenizer_name_or_path == "text8":
         tokenizer = Text8Tokenizer()
     elif config.data.tokenizer_name_or_path == "bert-base-uncased":
@@ -546,18 +527,14 @@ def get_tokenizer(config: object) -> "transformers.PreTrainedTokenizer":
     elif config.data.tokenizer_name_or_path == "gpt2":
         tokenizer = transformers.GPT2TokenizerFast.from_pretrained("gpt2")
     else:
-        tokenizer = transformers.AutoTokenizer.from_pretrained(
-            config.data.tokenizer_name_or_path
-        )
+        tokenizer = transformers.AutoTokenizer.from_pretrained(config.data.tokenizer_name_or_path)
 
     if isinstance(tokenizer, transformers.GPT2TokenizerFast) or isinstance(
         tokenizer, transformers.GPT2Tokenizer
     ):
-        tokenizer._tokenizer.post_processor = (
-            tokenizers.processors.BertProcessing(
-                (tokenizer.bos_token, tokenizer.bos_token_id),
-                (tokenizer.eos_token, tokenizer.eos_token_id),
-            )
+        tokenizer._tokenizer.post_processor = tokenizers.processors.BertProcessing(
+            (tokenizer.bos_token, tokenizer.bos_token_id),
+            (tokenizer.eos_token, tokenizer.eos_token_id),
         )
 
     # For wrapped batches:
@@ -565,17 +542,11 @@ def get_tokenizer(config: object) -> "transformers.PreTrainedTokenizer":
     #  [BOS] sent2-fragment [EOS] sent3 [EOS]
     if tokenizer.bos_token is None:
         if tokenizer.cls_token is None:
-            raise AttributeError(
-                "Tokenizer must have a bos_token or "
-                f"cls_token: {tokenizer}"
-            )
+            raise AttributeError("Tokenizer must have a bos_token or " f"cls_token: {tokenizer}")
         tokenizer.bos_token = tokenizer.cls_token
     if tokenizer.eos_token is None:
         if tokenizer.sep_token is None:
-            raise AttributeError(
-                "Tokenizer must have a eos_token "
-                f"or sep_token: {tokenizer}"
-            )
+            raise AttributeError("Tokenizer must have a eos_token " f"or sep_token: {tokenizer}")
         tokenizer.eos_token = tokenizer.sep_token
     if tokenizer.pad_token is None:
         tokenizer.add_special_tokens({"pad_token": "[PAD]"})
@@ -590,7 +561,7 @@ def get_tokenizer(config: object) -> "transformers.PreTrainedTokenizer":
 
 def get_text_dataloaders(
     config: object,
-    tokenizer: "transformers.PreTrainedTokenizer",
+    tokenizer: transformers.PreTrainedTokenizer,
     skip_train: bool = False,
     skip_valid: bool = False,
     valid_seed: int | None = None,

@@ -14,11 +14,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.import contextlib
 
+import contextlib
 import copy
 import os
 import threading
-from typing import Any, Dict, Iterable
-import contextlib
+from collections.abc import Iterable
+from typing import Any
 
 import pytorch_lightning as pl
 import torch
@@ -43,7 +44,11 @@ class EMA(Callback):
     """
 
     def __init__(
-        self, decay: float, validate_original_weights: bool = False, every_n_steps: int = 1, cpu_offload: bool = False,
+        self,
+        decay: float,
+        validate_original_weights: bool = False,
+        every_n_steps: int = 1,
+        cpu_offload: bool = False,
     ):
         if not (0 <= decay <= 1):
             raise MisconfigurationException("EMA decay value must be between 0 and 1")
@@ -53,7 +58,7 @@ class EMA(Callback):
         self.cpu_offload = cpu_offload
 
     def on_fit_start(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
-        device = pl_module.device if not self.cpu_offload else torch.device('cpu')
+        device = pl_module.device if not self.cpu_offload else torch.device("cpu")
         trainer.optimizers = [
             EMAOptimizer(
                 optim,
@@ -116,7 +121,7 @@ class EMA(Callback):
                 optimizer.save_original_optimizer_state = False
 
     def on_load_checkpoint(
-        self, trainer: "pl.Trainer", pl_module: "pl.LightningModule", checkpoint: Dict[str, Any]
+        self, trainer: "pl.Trainer", pl_module: "pl.LightningModule", checkpoint: dict[str, Any]
     ) -> None:
         checkpoint_callback = trainer.checkpoint_callback
 
@@ -125,20 +130,24 @@ class EMA(Callback):
         # Replace connector._ckpt_path with below to avoid calling into lightning's protected API
         ckpt_path = trainer.ckpt_path
 
-        if ckpt_path and checkpoint_callback is not None and 'NeMo' in type(checkpoint_callback).__name__:
+        if (
+            ckpt_path
+            and checkpoint_callback is not None
+            and "NeMo" in type(checkpoint_callback).__name__
+        ):
             ext = checkpoint_callback.FILE_EXTENSION
-            if ckpt_path.endswith(f'-EMA{ext}'):
+            if ckpt_path.endswith(f"-EMA{ext}"):
                 rank_zero_info(
                     "loading EMA based weights. "
                     "The callback will treat the loaded EMA weights as the main weights"
                     " and create a new EMA copy when training."
                 )
                 return
-            ema_path = ckpt_path.replace(ext, f'-EMA{ext}')
+            ema_path = ckpt_path.replace(ext, f"-EMA{ext}")
             if os.path.exists(ema_path):
-                ema_state_dict = torch.load(ema_path, map_location=torch.device('cpu'))
+                ema_state_dict = torch.load(ema_path, map_location=torch.device("cpu"))
 
-                checkpoint['optimizer_states'] = ema_state_dict['optimizer_states']
+                checkpoint["optimizer_states"] = ema_state_dict["optimizer_states"]
                 del ema_state_dict
                 rank_zero_info("EMA state has been restored.")
             else:
@@ -152,7 +161,9 @@ class EMA(Callback):
 def ema_update(ema_model_tuple, current_model_tuple, decay):
     torch._foreach_mul_(ema_model_tuple, decay)
     torch._foreach_add_(
-        ema_model_tuple, current_model_tuple, alpha=(1.0 - decay),
+        ema_model_tuple,
+        current_model_tuple,
+        alpha=(1.0 - decay),
     )
 
 
@@ -228,7 +239,7 @@ class EMAOptimizer(torch.optim.Optimizer):
         self.in_saving_ema_model_context = False
 
     def all_parameters(self) -> Iterable[torch.Tensor]:
-        return (param for group in self.param_groups for param in group['params'])
+        return (param for group in self.param_groups for param in group["params"])
 
     def step(self, closure=None, grad_scaler=None, **kwargs):
         self.join()
@@ -243,7 +254,8 @@ class EMAOptimizer(torch.optim.Optimizer):
             opt_params = list(self.all_parameters())
 
             self.ema_params += tuple(
-                copy.deepcopy(param.data.detach()).to(self.device) for param in opt_params[len(self.ema_params) :]
+                copy.deepcopy(param.data.detach()).to(self.device)
+                for param in opt_params[len(self.ema_params) :]
             )
             self.rebuild_ema_params = False
 
@@ -270,12 +282,18 @@ class EMAOptimizer(torch.optim.Optimizer):
                 param.data.to(self.device, non_blocking=True) for param in self.all_parameters()
             )
 
-            if self.device.type == 'cuda':
+            if self.device.type == "cuda":
                 ema_update(self.ema_params, current_model_state, self.decay)
 
-        if self.device.type == 'cpu':
+        if self.device.type == "cpu":
             self.thread = threading.Thread(
-                target=run_ema_update_cpu, args=(self.ema_params, current_model_state, self.decay, self.stream,),
+                target=run_ema_update_cpu,
+                args=(
+                    self.ema_params,
+                    current_model_state,
+                    self.decay,
+                    self.stream,
+                ),
             )
             self.thread.start()
 
@@ -328,24 +346,26 @@ class EMAOptimizer(torch.optim.Optimizer):
             return self.optimizer.state_dict()
 
         # if we are in the context of saving an EMA model, the EMA weights are in the modules' actual weights
-        ema_params = self.ema_params if not self.in_saving_ema_model_context else list(self.all_parameters())
+        ema_params = (
+            self.ema_params if not self.in_saving_ema_model_context else list(self.all_parameters())
+        )
         state_dict = {
-            'opt': self.optimizer.state_dict(),
-            'ema': ema_params,
-            'current_step': self.current_step,
-            'decay': self.decay,
-            'every_n_steps': self.every_n_steps,
+            "opt": self.optimizer.state_dict(),
+            "ema": ema_params,
+            "current_step": self.current_step,
+            "decay": self.decay,
+            "every_n_steps": self.every_n_steps,
         }
         return state_dict
 
     def load_state_dict(self, state_dict):
         self.join()
 
-        self.optimizer.load_state_dict(state_dict['opt'])
-        self.ema_params = tuple(param.to(self.device) for param in copy.deepcopy(state_dict['ema']))
-        self.current_step = state_dict['current_step']
-        self.decay = state_dict['decay']
-        self.every_n_steps = state_dict['every_n_steps']
+        self.optimizer.load_state_dict(state_dict["opt"])
+        self.ema_params = tuple(param.to(self.device) for param in copy.deepcopy(state_dict["ema"]))
+        self.current_step = state_dict["current_step"]
+        self.decay = state_dict["decay"]
+        self.every_n_steps = state_dict["every_n_steps"]
         self.rebuild_ema_params = False
 
     def add_param_group(self, param_group):

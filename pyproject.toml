@@ -1,6 +1,6 @@
 [build-system]
 requires = ["hatchling"]
-build-backend = "hatchling.backends"
+build-backend = "hatchling.build"
 
 [project]
 name = "scud"
@@ -49,7 +49,17 @@ line-length = 100
 
 [tool.ruff]
 line-length = 100
+
+[tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "PL", "NPY", "PT"]
+ignore = [
+    "PLR0913",  # Too many arguments — research code has complex constructors
+    "PLR2004",  # Magic values in comparisons — acceptable in math-heavy code
+    "PLC0415",  # Import not at top level — intentional lazy imports
+    "E731",     # Lambda assignment — concise for math expressions
+    "PLR0912",  # Too many branches
+    "PLR0915",  # Too many statements
+]
 
 [tool.mypy]
 python_version = "3.10"
