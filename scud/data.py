@@ -734,8 +734,9 @@ def get_protein_dataloaders(cfg):
     max_len = 1024
     tokenizer = Tokenizer()
     print("Getting Uniref.")
-    train_dataset = UniRefDataset('data/uniref_2020/uniref50/', 'train', structure=False, max_len=max_len)
-    test_dataset = UniRefDataset('data/uniref_2020/uniref50/', 'test', structure=False, max_len=max_len)
+    data_dir = cfg.data.data_dir if hasattr(cfg.data, 'data_dir') else 'data/uniref_2020/uniref50/'
+    train_dataset = UniRefDataset(data_dir, 'train', structure=False, max_len=max_len)
+    test_dataset = UniRefDataset(data_dir, 'test', structure=False, max_len=max_len)
 
     def mask_pad(tokenized):
         masks = tokenized != tokenizer.pad_id

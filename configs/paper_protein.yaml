@@ -1,3 +1,5 @@
+# SCUD paper Table 2 configuration
+# Protein generation with BLOSUM forward process
 data:
     data: uniref50
     data_dir: data/uniref_2020/uniref50/
@@ -32,7 +34,7 @@ train:
     grad_clip_val: 1
     weight_decay: 0
     accumulate: 2
-    ema: false
+    ema: true
     pack: true
 
 sampling:

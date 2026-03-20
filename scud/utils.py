@@ -37,7 +37,7 @@ def convert_to_probs(x_0, num_classes):
         x_0_probs = torch.softmax(x_0.clone(), dim=-1)
     return x_0_probs
 
-def get_inf_gen(forward_kwargs, num_classes):
+def get_inf_gen(forward_kwargs, num_classes, data_dir="data"):
     if forward_kwargs['type'] == "uniform":
         L = torch.ones(num_classes, num_classes) / (num_classes-1)
         L.diagonal().fill_(-1)
@@ -58,7 +58,8 @@ def get_inf_gen(forward_kwargs, num_classes):
                             4.70, 6.56, 5.34, 1.08, 2.92, 6.87] + 11*[0]) / 100 
         blosum_alphabet = np.array(list('ARNDCQEGHILKMFPSTWYVBZXJOU-'))
         tok_alphabet = np.array(tokenizer.alphabet)
-        with open('data/blosum62-special-MSA.mat') as f:
+        import os
+        with open(os.path.join(data_dir, 'blosum62-special-MSA.mat')) as f:
             load_matrix = np.array([line.split()[1:] for line in f if line[0] in blosum_alphabet], dtype=int)
         map_ = blosum_alphabet[:, None] == tok_alphabet[None, :]
         blosum_matrix = np.zeros((len(tok_alphabet), len(tok_alphabet)))

@@ -30,6 +30,12 @@ class SCUD(ContinuousTimeDiffusion):
         # Precalculate Ls
         L = get_inf_gen(forward_kwargs, num_classes)
         # Get Ks
+        # NOTE: Gamma convention differs from paper.
+        # Paper: r = r* / gamma, where gamma in (0, 1], gamma=1 is full schedule conditioning.
+        # Code:  r = r* / (1-gamma), where gamma in [0, 1), gamma=0 is full schedule conditioning.
+        # Relationship: code_gamma = 1 - paper_gamma.
+        # gamma=0 here -> rate=r* (slowest events, most schedule info) = paper's gamma=1
+        # gamma->1 here -> rate->inf (fastest events, classical diffusion) = paper's gamma->0
         rate = - (L.diagonal().min()) / (1-gamma) # L^* in sec 6.6 of the notes
         K = L / rate + torch.eye(num_classes)
         self.rate = rate

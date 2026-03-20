@@ -82,7 +82,7 @@ def train(cfg: DictConfig) -> None:
 
     ##### Train
     # wandb.init()
-    wandb_logger = WandbLogger(project="debugging")
+    wandb_logger = WandbLogger(project=OmegaConf.select(cfg, "wandb.project", default="scud"))
     lightning_model = model
     torch.set_float32_matmul_precision('high')
     @rank_zero_only

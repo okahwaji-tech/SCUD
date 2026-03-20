@@ -12,14 +12,15 @@ def hash_matrix(matrix):
     hash_object.update(byte_string)
     return hash_object.hexdigest()
 
-def try_load(func, fname, path='data/save_alphas/'):
-    if fname in os.listdir(path):
+def try_load(func, fname, cache_dir='data/save_alphas/'):
+    os.makedirs(cache_dir, exist_ok=True)
+    if fname in os.listdir(cache_dir):
         print("Loading alphas. Note: I hope p0 is similar to before!")
-        val = np.load(path+fname)
+        val = np.load(cache_dir+fname)
         val = torch.tensor(val)
     else:
         val = func()#- log_alpha_naive(base_ts)
-        np.save(path+fname, val.cpu().numpy())
+        np.save(cache_dir+fname, val.cpu().numpy())
     return val
 
 def get_a_b_func_cont(L, p0, **kwargs):

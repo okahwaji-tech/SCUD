@@ -1,6 +1,8 @@
+# SCUD paper main results configuration
+# CIFAR-10 with B=256 states, 32-layer UNet
 data:
     data: CIFAR10
-    N: 128
+    N: 256
 
 model:
     seed: 0
@@ -21,7 +23,7 @@ architecture:
     nn_params:
         s_lengthscale: 50
         time_lengthscale: 1
-        n_layers: 8
+        n_layers: 32
         time_embed_dim: 0
         not_logistic_pars: false
         semb_style: u_inject
@@ -33,13 +35,13 @@ architecture:
     width: 32
 
 train:
-    batch_size: 16
-    n_epoch: 14
+    batch_size: 64
+    n_epoch: 100
     lr: 0.0002
     grad_clip_val: 1
     weight_decay: 0
-    accumulate: 1
-    ema: false
+    accumulate: 4
+    ema: true
 
 sampling:
     gen_trans_step: 2048
