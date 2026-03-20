@@ -85,9 +85,6 @@ class ContinuousTimeDiffusion(DiffusionTrainer):
         x_t = self.x_t_sample(
             x, t, torch.rand((*x.shape, rand_shape if rand_shape is not None else self.num_classes), device=x.device), S
         )
-        # if attn_mask is not None:
-        #     x_t = torch.where(attn_mask==1, x_t, x)
-        #     S = torch.where(attn_mask==1, S, 0 * S)
         return t, S, x_t
 
     def load_state_dict(self, state_dict, strict=False):
@@ -100,8 +97,6 @@ class ContinuousTimeDiffusion(DiffusionTrainer):
                 setattr(self, key, state_dict[key])
                 if key in unexpected_keys:
                     unexpected_keys.remove(key)
-            # elif strict:
-            #     missing_keys.append(key)
 
         if strict:
             error_msgs = []

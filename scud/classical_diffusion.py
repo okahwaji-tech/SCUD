@@ -1,9 +1,6 @@
-import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
-import time
 
 from .utils import kls, convert_to_probs, get_inf_gen
 from .schedule_sample import sample_n_transitions_cont
@@ -48,10 +45,6 @@ class ClassicalDiffusion(ContinuousTimeDiffusion):
         stationary = stationary * torch.sign(stationary)
         assert torch.all(stationary >= 0)
         return stationary / stationary.sum()
-
-    # def get_trans_mats_mvp(self, t, v):
-    #     mat = torch.matrix_exp(- self.log_alpha(t)[..., None, None] * self.L)
-    #     return torch.einsum("b...c,bcd->b...d", v, mat)
 
     def get_trans_mats_mvp(self, t, v):
         """ v is a b...c POSITIVE(!) matrix where L is cd, and t is b """
@@ -99,7 +92,6 @@ class ClassicalDiffusion(ContinuousTimeDiffusion):
 
     def forward(self, x: torch.Tensor,attn_mask=None, *args) -> torch.Tensor:
         t, _, x_t = self.sample_point(x, attn_mask)
-        # print("av S:", S.float().mean())
         # predict x_0 and prev(x_t)
         predicted_x0_logits = self.model_predict(x_t, t, attn_mask, None).to(torch.float32)
         true_r_posterior = self.r_posterior(x, x_t, t, None)
@@ -135,11 +127,9 @@ class ClassicalDiffusion(ContinuousTimeDiffusion):
         bwd_inf_gen = self.r_posterior(predicted_x0_logits, x, t, None)
         bwd_inf_gen.scatter_(-1, x.unsqueeze(-1), 0)
         bwd_inf_gen.scatter_(-1, x.unsqueeze(-1), - bwd_inf_gen.sum(-1).unsqueeze(-1))
-        # assert torch.allclose(bwd_inf_gen.sum(-1), 0)
-        
+
         x_t = F.one_hot(x, self.num_classes)
         trans_mat = x_t + delta_t * bwd_inf_gen
-        # print("Max trans =", trans_mat.max(), "Min trans =", trans_mat.min())
         # sample
         noise = torch.clip(noise, self.eps, 1.0)
         gumbel_noise = 1/(-torch.log(noise))

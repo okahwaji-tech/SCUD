@@ -54,7 +54,6 @@ def get_a_b_func_cont(L, p0, **kwargs):
         out = [newton_root_finder(mi, guess, batch, print_=False, max_iter=20)
                for batch, guess in tqdm(list(zip(batches, guesses)))]
         out = torch.concat(out)
-        # out = root_finder(mi, 0, 20/second_eval, ts)
         return -torch.where(out>1e-8, out, 1e-8)
     hash_mat = hash_matrix(L)
     if N > 200:

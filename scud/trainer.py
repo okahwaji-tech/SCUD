@@ -9,7 +9,6 @@ from PIL import Image
 from torchvision.utils import make_grid
 import torch.nn.functional as F
 from tqdm import tqdm
-#from .inception_score import inception_score
 from pytorch_lightning.utilities import rank_zero_only
 
 def get_gif(sample_x, sample_a, model, gen_trans_step, batch_size):
@@ -95,7 +94,6 @@ class DiffusionTrainer(pl.LightningModule):
         self.n_gen_images = n_gen_images
         self.n_stat_samples = n_stat_samples
         self.tokenizer = tokenizer
-        # self.to(torch.float32)
 
     def forward(self, x):
         raise NotImplementedError
@@ -123,7 +121,6 @@ class DiffusionTrainer(pl.LightningModule):
         pbar.close()
         p0 = p0 / p0.sum()
         self.p0 = p0
-        # self.register_buffer("p0", p0)
 
     def training_step(self, batch, batch_idx):   
         if isinstance(batch, tuple): #protein datasets
@@ -140,9 +137,6 @@ class DiffusionTrainer(pl.LightningModule):
                 
         self.log('train_loss', info['vb_loss'], sync_dist=True)
         self.log('train_ce_loss', info['ce_loss'], sync_dist=True)
-        # with torch.no_grad():
-        #     param_norm = sum([torch.norm(p) for p in self.parameters()])
-        # self.log('param_norm', param_norm, sync_dist=True)
         return loss
 
     def validation_step(self, batch, batch_idx):        
@@ -184,10 +178,6 @@ class DiffusionTrainer(pl.LightningModule):
                             wandb.log({"sample_text": wandb.Table(columns=["text"], data=[[joined_text]])})
                             joined_text_gen = ["\n\n".join(t) for t in gen_text]
                             wandb.log({"sample_text_process": wandb.Table(columns=["text"], data=[[jt] for jt in joined_text_gen])})
-
-    # def on_fit_start(self):
-    #     if isinstance(self.logger, pl.loggers.WandbLogger):
-    #         wandb.config.update(self.hparams)
 
     def on_before_optimizer_step(self, optimizer):
         # Gradient clipping

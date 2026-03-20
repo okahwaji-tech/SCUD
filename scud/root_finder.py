@@ -55,8 +55,7 @@ def newton_root_finder(func, x0, ts, min_x=torch.tensor(1e-8), max_iter=1000, to
             f[mask] = f_masked.detach()
             df[mask] = df_masked  
 
-        step =  - f / df
-        # step = torch.sign(step) * torch.clamp(torch.abs(step), None, 3*torch.abs(x)/4)
+        step = -f / df
         x_at_min = (x == min_x) * (step < 0)
         x[mask] = torch.where(mask, x + step, x)[mask]
         x = torch.maximum(x, min_x)
@@ -68,4 +67,4 @@ def newton_root_finder(func, x0, ts, min_x=torch.tensor(1e-8), max_iter=1000, to
             print("av errs", (torch.abs(f)[torch.abs(f) > tol]).mean(),
                   "N:", (torch.abs(f) > tol).sum())
 
-    return x#torch.where(torch.abs(f) < tol, x, torch.full_like(x, float('nan')))
+    return x

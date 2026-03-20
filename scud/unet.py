@@ -6,6 +6,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+MAX_EMBED_SIZE = 10_000
+
+
 def freeze_layer(layer):
     for param in layer.parameters():
         param.requires_grad = False
@@ -24,7 +27,6 @@ class NormalizationLayer(nn.Module):
 def pad_image(x, target_size):
     """Preprocess image to target size with padding."""
     _, _, h, w = x.shape
-    # target_size = math.ceil(max([h, w]) // 2 ** sec_power) * 2 ** sec_power
     if h == target_size and w == target_size:
         return x
     
@@ -156,7 +158,7 @@ class KingmaUNet(nn.Module):
             in_channels = ch * n_channel + n_channel * s_dim
 
             emb_dim = s_dim//2
-            semb_sin = 10000**(-torch.arange(emb_dim)/(emb_dim-1))
+            semb_sin = MAX_EMBED_SIZE**(-torch.arange(emb_dim)/(emb_dim-1))
             self.register_buffer("semb_sin", semb_sin)
             if semb_style != "learn_embed":
                 self.S_embed_sinusoid = lambda s: torch.cat([
@@ -175,9 +177,9 @@ class KingmaUNet(nn.Module):
                         nn.Linear(s_embed_dim, ch * n_channel),
                     )
             else:
-                s = torch.arange(10000).reshape(-1, 1) * 1000 / s_lengthscale
+                s = torch.arange(MAX_EMBED_SIZE).reshape(-1, 1) * 1000 / s_lengthscale
                 semb = torch.cat([torch.sin(s * semb_sin), torch.cos(s * semb_sin)], dim=1)
-                self.S_embed_sinusoid = nn.Embedding(10000, s_dim)
+                self.S_embed_sinusoid = nn.Embedding(MAX_EMBED_SIZE, s_dim)
                 self.S_embed_sinusoid.weight.data = semb
                 s_embed_dim = 0
                 self.S_embed_nn = nn.Identity()
@@ -299,7 +301,7 @@ class KingmaUNet(nn.Module):
         if self.time_embed_dim > 0:
             t = t.float().reshape(-1, 1) * 1000 / self.time_lengthscale
             emb_dim = self.ch//2
-            temb_sin = 10000**(-torch.arange(emb_dim, device=t.device)/(emb_dim-1))
+            temb_sin = MAX_EMBED_SIZE**(-torch.arange(emb_dim, device=t.device)/(emb_dim-1))
             temb_sin = torch.cat([torch.sin(t * temb_sin), torch.cos(t * temb_sin)], dim=1)
             temb = self.time_embed(temb_sin)
             if self.first_mult:

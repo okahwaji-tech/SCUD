@@ -1,16 +1,17 @@
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
 import math
-import time
 
-from .utils import kls, convert_to_probs, get_inf_gen, sample_index_S
+from .utils import kls, convert_to_probs, get_inf_gen
 from .schedule_sample import sample_n_transitions_cont
 from .continuous_time_diffusion import ContinuousTimeDiffusion
 
 class SCUD(ContinuousTimeDiffusion):
+    MAX_K_POWERS = 5000
+    MAX_CLASSES_FOR_PRECOMPUTE = 512
+
     def __init__(
         self,
         x0_model_class,
@@ -47,9 +48,8 @@ class SCUD(ContinuousTimeDiffusion):
         self.register_buffer("eigenvectors_inv", eigenvectors_inv)
         
         # Precalculate K_powers
-        num_powers = 5000
-        assert (num_classes <= 512 and forward_kwargs['type'] != "bert_embed")
-        K_powers = torch.stack([torch.linalg.matrix_power(K, i) for i in range(5000)])
+        assert (num_classes <= self.MAX_CLASSES_FOR_PRECOMPUTE and forward_kwargs['type'] != "bert_embed")
+        K_powers = torch.stack([torch.linalg.matrix_power(K, i) for i in range(self.MAX_K_POWERS)])
         self.register_buffer("K", K)
         self.register_buffer("K_powers", K_powers)
 
@@ -162,51 +162,59 @@ class SCUD(ContinuousTimeDiffusion):
         sample = torch.argmax(sample_logits * gumbel_noise, dim=-1)
         return sample
     
-    def sample_sequence(self, x, attn_mask=None, n_T=200, stride=10,
-                        n_corrector_steps=10, temperature=1, use_tau=False):
-        t = self.t_max * torch.ones(x.shape[0], device=x.device)
-        S = sample_n_transitions_cont(self.log_alpha, x[0].flatten().shape[0], t)
-        t = t * 0
-        S = S.swapaxes(0, 1).reshape(*x.shape).long()
-        steps = 0
-        images = []
-        n_steps = torch.tensor([S[b].sum() for b in range(len(S))]).max().item()
-        pbar = tqdm(total=n_steps, unit="iteration",
-                    position=0, leave=True)
-        trans_step = max([n_steps // n_T, 1]) * (n_corrector_steps + 1)
-        total_steps = math.ceil(n_steps/trans_step)
-        trans_corrector_k = max([trans_step // np.prod(x[0].shape), 1])
-        print("Corrector_k:", trans_corrector_k)
-        # get order of denoising
-        ks = torch.zeros([len(x), total_steps, len(S[0].flatten())], device=S.device, dtype=torch.long)
+    def _build_denoising_schedule(self, S, x, total_steps, n_T, trans_step, use_tau):
+        """Construct the ks tensor: schedule of how many events to denoise at each step per dimension."""
+        ks = torch.zeros(
+            [len(x), total_steps, len(S[0].flatten())], device=S.device, dtype=torch.long
+        )
         for b in range(len(x)):
             # count how many in each bin
             if use_tau:
-                ts = torch.linspace(0, self.t_max, total_steps+1, device=S.device).to(torch.float32)
-                weights = - self.log_alpha(ts)
+                ts = torch.linspace(
+                    0, self.t_max, total_steps + 1, device=S.device
+                ).to(torch.float32)
+                weights = -self.log_alpha(ts)
                 diffs = weights[1:] - weights[:-1]
-                n_steps = torch.bincount(torch.multinomial(diffs, num_samples=S[b].sum(), replacement=True),
-                                         None, n_T)
+                n_steps = torch.bincount(
+                    torch.multinomial(diffs, num_samples=S[b].sum(), replacement=True),
+                    None, n_T,
+                )
                 n_steps = torch.cumsum(n_steps, -1)
-                n_steps = torch.cat([torch.zeros_like(n_steps[[0]]), n_steps], axis=-1).long()
+                n_steps = torch.cat(
+                    [torch.zeros_like(n_steps[[0]]), n_steps], axis=-1
+                ).long()
                 assert n_steps[-1] == S[b].sum()
             else:
                 n_steps = trans_step * torch.ones(total_steps, device=S.device).to(torch.float32)
                 n_steps = torch.cumsum(n_steps, -1)
-                n_steps = torch.cat([torch.zeros_like(n_steps[[0]]), n_steps], axis=-1).long()
+                n_steps = torch.cat(
+                    [torch.zeros_like(n_steps[[0]]), n_steps], axis=-1
+                ).long()
                 assert n_steps[-1] >= S[b].sum()
-            
+
             indices = torch.argwhere(S[b].flatten() > 0)[:, 0]
             values = S[b].flatten()[indices]
             repeated_indices = torch.repeat_interleave(indices, values.long(), dim=0)
             repeated_indices = repeated_indices[torch.randperm(repeated_indices.size(0))]
-            uniq = [torch.unique(repeated_indices[n_steps[step]:n_steps[1+step]],
-                    return_counts=True) for step in range(total_steps)]
+            uniq = [
+                torch.unique(
+                    repeated_indices[n_steps[step] : n_steps[1 + step]],
+                    return_counts=True,
+                )
+                for step in range(total_steps)
+            ]
             for (u, c), i in zip(uniq, range(len(uniq))):
                 if len(u) > 0:
                     ks[b][i][u] += c
-            ones = torch.ones_like(S)
         assert torch.all(ks.sum(1) == S.reshape(len(x), -1))
+        return ks
+
+    def _run_denoising_loop(self, x, S, ks, t, attn_mask, n_corrector_steps,
+                            temperature, trans_step, trans_corrector_k, stride, images):
+        """Run the denoising loop, iterating through steps and calling p_sample/corrector_sample."""
+        steps = 0
+        n_steps = torch.tensor([S[b].sum() for b in range(len(S))]).max().item()
+        pbar = tqdm(total=n_steps, unit="iteration", position=0, leave=True)
         while S.sum() > 0:
             k = ks[:, steps, :].reshape(S.shape)
             S_temp = S - k
@@ -221,9 +229,11 @@ class SCUD(ContinuousTimeDiffusion):
             assert torch.all(S_temp <= S)
             S = S_temp
             for l in range(n_corrector_steps):
-                x = self.corrector_sample(x, t, attn_mask,
+                x = self.corrector_sample(
+                    x, t, attn_mask,
                     torch.rand((*x.shape, self.num_classes), device=x.device),
-                    S, k=torch.minimum(S, torch.tensor(trans_corrector_k)), temperature=temperature,
+                    S, k=torch.minimum(S, torch.tensor(trans_corrector_k)),
+                    temperature=temperature,
                 )
             pbar.update(trans_step)
             steps += 1
@@ -233,5 +243,23 @@ class SCUD(ContinuousTimeDiffusion):
         # if last step is not divisible by stride, we add the last image.
         if steps % stride != 0:
             images.append(x)
-
         return images
+
+    def sample_sequence(self, x, attn_mask=None, n_T=200, stride=10,
+                        n_corrector_steps=10, temperature=1, use_tau=False):
+        t = self.t_max * torch.ones(x.shape[0], device=x.device)
+        S = sample_n_transitions_cont(self.log_alpha, x[0].flatten().shape[0], t)
+        t = t * 0
+        S = S.swapaxes(0, 1).reshape(*x.shape).long()
+        images = []
+        n_steps = torch.tensor([S[b].sum() for b in range(len(S))]).max().item()
+        trans_step = max([n_steps // n_T, 1]) * (n_corrector_steps + 1)
+        total_steps = math.ceil(n_steps / trans_step)
+        trans_corrector_k = max([trans_step // np.prod(x[0].shape), 1])
+        print("Corrector_k:", trans_corrector_k)
+
+        ks = self._build_denoising_schedule(S, x, total_steps, n_T, trans_step, use_tau)
+        return self._run_denoising_loop(
+            x, S, ks, t, attn_mask, n_corrector_steps,
+            temperature, trans_step, trans_corrector_k, stride, images,
+        )
