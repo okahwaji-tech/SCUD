@@ -14,6 +14,7 @@ protein_nn_name_dict = {
 
 def get_model_setup(cfg, tokenizer=None):
     schedule_conditioning = cfg.model.model in [
+        "SCUD",
         "ScheduleCondition", "DiscreteScheduleCondition",
         "MaskingDiffusion",
     ]

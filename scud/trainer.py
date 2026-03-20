@@ -98,10 +98,10 @@ class DiffusionTrainer(pl.LightningModule):
         # self.to(torch.float32)
 
     def forward(self, x):
-        return NotImplementedError
+        raise NotImplementedError
 
     def get_kl_t1(self, x):
-        return NotImplementedError
+        raise NotImplementedError
 
     def pre_configure_model(self, dataloader):
         pass

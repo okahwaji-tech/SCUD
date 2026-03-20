@@ -123,19 +123,36 @@ class ContinuousTimeDiffusion(DiffusionTrainer):
         hparams = checkpoint['hyper_parameters']
         
         # Get the x0_model_class
-        from scud.unet import UNet, KingmaUNet, SimpleUNet, GigaUNet
-        from scud.dit_vision import DiT_Llama
-        from scud.dit_text import DIT
-        from scud.protein_convnet import ByteNetLMTime
-        x0_model_class = {
-            "SimpleUNet":SimpleUNet,
-            "KingmaUNet":KingmaUNet,
-            "UNet":UNet,
-            "GigaUNet":GigaUNet,
-            "DiT_Llama":DiT_Llama,
-            "DIT": DIT,
-            "ByteNetLMTime": ByteNetLMTime
-        }[hparams['x0_model_class']]
+        x0_model_class_map = {}
+        try:
+            from scud.unet import KingmaUNet
+            x0_model_class_map["KingmaUNet"] = KingmaUNet
+        except ImportError:
+            pass
+        try:
+            from scud.protein_convnet import ByteNetLMTimeNew
+            x0_model_class_map["ByteNetLMTimeNew"] = ByteNetLMTimeNew
+        except ImportError:
+            pass
+        try:
+            from scud.dit_vision import DiT_Llama
+            x0_model_class_map["DiT_Llama"] = DiT_Llama
+        except ImportError:
+            pass
+        try:
+            from scud.dit_text import DIT
+            x0_model_class_map["DIT"] = DIT
+        except ImportError:
+            pass
+        cls_name = hparams['x0_model_class']
+        if cls_name not in x0_model_class_map:
+            available = list(x0_model_class_map.keys())
+            raise ImportError(
+                f"x0_model_class '{cls_name}' not found. "
+                f"Available classes: {available}. "
+                f"Ensure the corresponding module is installed."
+            )
+        x0_model_class = x0_model_class_map[cls_name]
         hparams['x0_model_class'] = x0_model_class
 
         # Create model

@@ -114,13 +114,11 @@ class ClassicalDiffusion(ContinuousTimeDiffusion):
         vb_loss = kl.mean() * self.t_max
         if attn_mask is not None:
             vb_loss = vb_loss / attn_mask.mean()
-        print("vb loss:", vb_loss)
 
         # Also calculate cross entropy loss
         predicted_x0_logits = predicted_x0_logits.flatten(start_dim=0, end_dim=-2)
         x = x.flatten(start_dim=0, end_dim=-1)
         ce_loss = torch.nn.CrossEntropyLoss(reduction='none')(predicted_x0_logits, x)
-        print("ce loss:", ce_loss.mean())
         if attn_mask is not None:
             ce_loss = (ce_loss * attn_mask.flatten()).sum() / attn_mask.sum()
         else:
