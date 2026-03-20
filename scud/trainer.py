@@ -155,7 +155,6 @@ class DiffusionTrainer(pl.LightningModule):
             attn_mask = None
 
         loss, info = self(x, attn_mask)
-        print(info['vb_loss'], self.get_kl_t1(x).detach().item())
         self.log('val_l01', info['vb_loss'], on_step=False, on_epoch=True, sync_dist=True)
         self.log('val_l1', self.get_kl_t1(x).detach().item(), on_step=False, on_epoch=True, sync_dist=True)
         self.log('val_ce_loss', info['ce_loss'], on_step=False, on_epoch=True, sync_dist=True)
@@ -178,7 +177,6 @@ class DiffusionTrainer(pl.LightningModule):
                             wandb.log({"sample_gif": wandb.Image(gif_fname)})
                             wandb.log({"sample_gif_last": wandb.Image(img_fname)})
                 else:
-                    print("getting text")
                     last_text, gen_text = get_text(self.sample_x, self.sample_a, self, self.gen_trans_step, self.n_gen_images, self.tokenizer)
                     if last_text is not None:
                         if isinstance(self.logger, pl.loggers.WandbLogger):
