@@ -1,6 +1,6 @@
 wandb
 outputs
-data
+/data
 data:uniref_2020
 .DS_Store
 
