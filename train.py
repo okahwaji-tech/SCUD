@@ -24,9 +24,9 @@ from scud.scud import SCUD
 from scud.masking_diffusion import MaskingDiffusion
 from scud.classical_diffusion import ClassicalDiffusion
 
-from nets import get_model_setup
-from data import get_dataloaders
-from ema import EMA
+from scud.nets import get_model_setup
+from scud.data import get_dataloaders
+from scud.ema import EMA
 
 import getpass
 
