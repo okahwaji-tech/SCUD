@@ -11,6 +11,7 @@ Reference: "Why Masking Diffusion Works" (NeurIPS 2025), Section 5.
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 import os
 from collections.abc import Callable
@@ -20,6 +21,8 @@ import torch
 from tqdm import tqdm
 
 from scud.root_finder import newton_root_finder
+
+logger = logging.getLogger(__name__)
 
 
 def hash_matrix(matrix: torch.Tensor) -> str:
@@ -52,7 +55,7 @@ def try_load(
     """
     os.makedirs(cache_dir, exist_ok=True)
     if fname in os.listdir(cache_dir):
-        print("Loading alphas. Note: I hope p0 is similar to before!")
+        logger.info("Loading alphas. Note: I hope p0 is similar to before!")
         val = np.load(cache_dir + fname)
         val = torch.tensor(val)
     else:
@@ -61,9 +64,7 @@ def try_load(
     return val
 
 
-def get_a_b_func_cont(
-    L: torch.Tensor, p0: torch.Tensor, **kwargs: object
-) -> tuple[
+def get_a_b_func_cont(L: torch.Tensor, p0: torch.Tensor, **kwargs: object) -> tuple[
     Callable[[torch.Tensor], torch.Tensor],
     Callable[[torch.Tensor], torch.Tensor],
     Callable[[torch.Tensor], torch.Tensor],
@@ -113,7 +114,7 @@ def get_a_b_func_cont(
         guesses = newton_root_finder(mi, 1 / second_eval, guess_ts, print_=False)
         out = [
             newton_root_finder(mi, guess, batch, print_=False, max_iter=20)
-            for batch, guess in tqdm(list(zip(batches, guesses)))
+            for batch, guess in tqdm(list(zip(batches, guesses, strict=True)))
         ]
         out = torch.concat(out)
         return -torch.where(out > 1e-8, out, 1e-8)
@@ -207,7 +208,7 @@ def get_a_b_func_sc(
         precompute_mis = [mi_p(n) for n in range(max_n)]
     precompute_mis = torch.tensor(precompute_mis).double()
     precompute_mis = torch.maximum(precompute_mis, torch.zeros(1))
-    max_n = (precompute_mis > 1e-7).sum()
+    max_n = int((precompute_mis > 1e-7).sum())
     precompute_mis = torch.cummin(precompute_mis[:max_n], 0)[0]
     range_ = torch.arange(max_n, dtype=p0.dtype)
     precompute_log_factorial = torch.lgamma(1 + range_)
@@ -263,6 +264,7 @@ def get_a_b_func_mi(
     mat: torch.Tensor, p0: torch.Tensor, type_: str, **kwargs: object
 ) -> tuple[Callable[..., torch.Tensor], ...]:
     if type_ == "schedule_condition":
-        return get_a_b_func_sc(mat, p0, **kwargs)
+        return get_a_b_func_sc(mat, p0, **kwargs)  # type: ignore[arg-type,return-value]
     elif type_ == "SEDD":
         return get_a_b_func_cont(mat, p0, **kwargs)
+    raise ValueError(f"Unknown type_: {type_}")

@@ -9,12 +9,16 @@ Reference: "Why Masking Diffusion Works" (NeurIPS 2025), Section 3.
 
 from __future__ import annotations
 
+import logging
+
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
 from .continuous_time_diffusion import ContinuousTimeDiffusion
 from .utils import convert_to_probs, get_inf_gen, kls
+
+logger = logging.getLogger(__name__)
 
 
 class ClassicalDiffusion(ContinuousTimeDiffusion):
@@ -33,19 +37,27 @@ class ClassicalDiffusion(ContinuousTimeDiffusion):
         logistic_pars: If True, use logistic parameterization.
     """
 
+    # Type annotations for register_buffer tensors
+    L: torch.Tensor
+    eigenvalues: torch.Tensor
+    eigenvectors: torch.Tensor
+    eigenvectors_inv: torch.Tensor
+
     def __init__(
         self,
         x0_model_class: type,
         nn_params: dict[str, object],
         num_classes: int = 10,
-        forward_kwargs: dict[str, object] = {"type": "uniform"},
+        forward_kwargs: dict[str, object] | None = None,
         schedule_type: str = "cos",
         logistic_pars: bool = False,
         **kwargs: object,
     ) -> None:
+        if forward_kwargs is None:
+            forward_kwargs = {"type": "uniform"}
         # Precalculate betas, define model_predict, p_sample
         super().__init__(
-            x0_model_class, nn_params, num_classes, schedule_type, logistic_pars, **kwargs
+            x0_model_class, nn_params, num_classes, schedule_type, logistic_pars, **kwargs  # type: ignore[arg-type]
         )
         self.save_hyperparameters(ignore=["x0_model_class"])
 
@@ -114,7 +126,7 @@ class ClassicalDiffusion(ContinuousTimeDiffusion):
         return kl.mean()
 
     def x_t_sample(
-        self, x_0: torch.Tensor, t: torch.Tensor, noise: torch.Tensor, S: torch.Tensor
+        self, x_0: torch.Tensor, t: torch.Tensor, noise: torch.Tensor, S: torch.Tensor | None = None
     ) -> torch.Tensor:
         # forward process, x_0 is the clean input.
         probs = self.get_trans_mats_index(t, x_0)
@@ -131,7 +143,7 @@ class ClassicalDiffusion(ContinuousTimeDiffusion):
         p_xt = p_y.gather(-1, x_t.unsqueeze(-1)).squeeze(-1)
         if not torch.all(p_xt > 1000 * self.eps):
             err = torch.any(p_xt <= self.eps, dim=-1)
-            print("Warning! small p_xt:", t[err], p_xt[err], x_0[err])
+            logger.warning("Small p_xt: %s %s %s", t[err], p_xt[err], x_0[err])
         ratios = p_y / (p_xt[..., None] + self.eps)
         bwd_inf_gen = ((ratios * self.L.T[x_t, :]).transpose(0, -1) * self.beta(t)).transpose(0, -1)
         bwd_inf_gen.scatter_(-1, x_t.unsqueeze(-1), 0)  # set diag to 0
@@ -194,12 +206,13 @@ class ClassicalDiffusion(ContinuousTimeDiffusion):
         sample = torch.argmax(trans_mat * gumbel_noise, dim=-1)
         return sample
 
-    def sample_sequence(
+    def sample_sequence(  # type: ignore[override]
         self,
         x: torch.Tensor,
         attn_mask: torch.Tensor | None = None,
         n_T: int = 200,
         stride: int = 10,
+        **kwargs: object,
     ) -> list[torch.Tensor]:
         n_T = 1
         steps = 0  ## TODO fix sampling when there are masks
@@ -209,8 +222,8 @@ class ClassicalDiffusion(ContinuousTimeDiffusion):
             position=0,
             leave=True,
         )
-        for t in pbar:
-            t = torch.tensor([t] * x.shape[0], device=x.device)
+        for t_val in pbar:
+            t = torch.tensor([t_val] * x.shape[0], device=x.device)
             x_next = self.p_sample(
                 x, t, attn_mask, torch.rand((*x.shape, self.num_classes), device=x.device), 1 / n_T
             )

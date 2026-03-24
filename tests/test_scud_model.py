@@ -1,17 +1,18 @@
 """Smoke tests for the SCUD model with a tiny configuration."""
+
 from __future__ import annotations
 
 import pytest
 
-pl = pytest.importorskip("pytorch_lightning")
+pl = pytest.importorskip("lightning.pytorch")
 
-import torch
+import torch  # noqa: E402
 
-from scud.scud import SCUD
-from scud.unet import KingmaUNet
+from scud.scud import SCUD  # noqa: E402
+from scud.unet import KingmaUNet  # noqa: E402
 
 
-@pytest.fixture()
+@pytest.fixture
 def tiny_scud_model() -> SCUD:
     """Create a minimal SCUD model for smoke testing."""
     num_classes = 4

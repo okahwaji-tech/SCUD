@@ -8,28 +8,29 @@ version = "0.1.0"
 description = "SCUD: Score-based Continuous-time Unified Diffusion"
 requires-python = ">=3.10"
 dependencies = [
-    "torch",
-    "torchvision",
-    "pytorch-lightning>=2.0",
+    "torch>=2.0",
+    "torchvision>=0.15",
+    "lightning>=2.0",
     "hydra-core>=1.3",
     "omegaconf>=2.3",
     "wandb>=0.15",
     "einops>=0.6",
-    "evodiff",
     "numpy",
     "Pillow",
     "certifi",
     "scipy",
-    "faiss-cpu",
+    "datasets>=2.14",
+    "huggingface_hub>=0.16",
 ]
 
 [project.optional-dependencies]
+protein = [
+    "evodiff",
+    "faiss-cpu",
+]
 text = [
     "transformers>=4.30",
-    "datasets>=2.14",
-    "huggingface_hub>=0.16",
     "tokenizers>=0.13",
-    "fsspec",
 ]
 dev = [
     "pytest>=7.0",
@@ -43,6 +44,7 @@ dev = [
 scud-train = "scud.cli:train"
 scud-sample = "scud.cli:sample"
 scud-evaluate = "scud.cli:evaluate"
+scud-prepare = "scud.cli:prepare"
 
 [tool.black]
 line-length = 100

@@ -25,7 +25,7 @@ def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch
     return x * (1 + scale) + shift
 
 
-@torch.jit.script
+@torch.compile
 def modulate_fused(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     return modulate(x, shift, scale)
 
@@ -120,10 +120,11 @@ class ByteNetLMTimeNew(nn.Module):
                 for d in dilations
             ]
         )
-        self.c_mod_layers = nn.ModuleList([nn.Linear(d_embedding, 2 * d_h) for d in dilations])
-        for layer in self.c_mod_layers:
-            layer.weight.data.zero_()
-            layer.bias.data.zero_()
+        c_mod_linear_layers = [nn.Linear(d_embedding, 2 * d_h) for d in dilations]
+        for lin_layer in c_mod_linear_layers:
+            lin_layer.weight.data.zero_()
+            lin_layer.bias.data.zero_()
+        self.c_mod_layers = nn.ModuleList(c_mod_linear_layers)
         self.dropout = dropout
         self.decoder = PositionFeedForward(d_model, n_tokens)
         self.last_norm = nn.LayerNorm(d_model)
@@ -148,9 +149,10 @@ class ByteNetLMTimeNew(nn.Module):
         """
         x = self.embedder(x)
         if not self.simple_embed:
-            x = self.up_embedder(x)
+            x = self.up_embedder(x)  # type: ignore[has-type]
 
         if self.schedule_conditioning:
+            assert S is not None
             S_out = F.silu(self.s_embed_input(S.reshape(-1))).reshape(S.shape + (-1,))
             x = modulate_fused(x, *S_out.chunk(2, dim=-1))
             c = F.silu(self.s_embed_block(S.reshape(-1))).reshape(S.shape + (-1,))
@@ -159,10 +161,12 @@ class ByteNetLMTimeNew(nn.Module):
             x = modulate_fused(x, *t_out.chunk(2, dim=-1))
             c = F.silu(self.time_embed_block(t))[:, None, :]
 
-        for layer, c_layer in zip(self.layers, self.c_mod_layers):
+        assert input_mask is not None
+        for layer, c_layer in zip(self.layers, self.c_mod_layers, strict=True):
             c_mod = c_layer(c)
             x = layer(x, c_mod, input_mask=input_mask.unsqueeze(-1))
-        return self.decoder(self.last_norm(x))
+        result: torch.Tensor = self.decoder(self.last_norm(x))
+        return result
 
 
 class ByteNetBlock_wmod(nn.Module):

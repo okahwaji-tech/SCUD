@@ -1,4 +1,5 @@
 """Tests for schedule sampling utilities (scud.schedule_sample)."""
+
 from __future__ import annotations
 
 import torch

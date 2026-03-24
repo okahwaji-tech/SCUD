@@ -73,6 +73,7 @@ class ResnetBlock(nn.Module):
             if self.film:
                 self.y_proj_mult = nn.Linear(emb_dim, out_channels)
 
+        self.shortcut: nn.Module
         if in_channels != out_channels:
             self.shortcut = nn.Conv2d(in_channels, out_channels, 1)
         else:
@@ -85,10 +86,7 @@ class ResnetBlock(nn.Module):
 
         # Add in timestep embedding
         if self.emb_dim > 0:
-            if self.film:
-                gam = 1 + self.temb_proj_mult(F.silu(temb))[:, :, None, None]
-            else:
-                gam = 1
+            gam = 1 + self.temb_proj_mult(F.silu(temb))[:, :, None, None] if self.film else 1
             bet = self.temb_proj(F.silu(temb))[:, :, None, None]
             h = gam * h + bet
 
@@ -102,10 +100,7 @@ class ResnetBlock(nn.Module):
 
         # Add in class embedding
         if y is not None:
-            if self.film:
-                gam = 1 + self.y_proj_mult(y)[:, :, None, None]
-            else:
-                gam = 1
+            gam = 1 + self.y_proj_mult(y)[:, :, None, None] if self.film else 1
             bet = self.y_proj(y)[:, :, None, None]
             h = gam * h + bet
 
@@ -207,7 +202,7 @@ class KingmaUNet(nn.Module):
             semb_sin = MAX_EMBED_SIZE ** (-torch.arange(emb_dim) / (emb_dim - 1))
             self.register_buffer("semb_sin", semb_sin)
             if semb_style != "learn_embed":
-                self.S_embed_sinusoid = lambda s: torch.cat(
+                self.S_embed_sinusoid: nn.Module = lambda s: torch.cat(  # type: ignore[assignment]
                     [
                         torch.sin(s.reshape(*s.shape, 1) * 1000 * self.semb_sin / s_lengthscale),
                         torch.cos(s.reshape(*s.shape, 1) * 1000 * self.semb_sin / s_lengthscale),
@@ -215,7 +210,7 @@ class KingmaUNet(nn.Module):
                     dim=-1,
                 )
                 in_channels = ch * n_channel + s_embed_dim
-                self.S_embed_nn = nn.Sequential(
+                self.S_embed_nn: nn.Module = nn.Sequential(
                     nn.Linear(n_channel * s_dim, s_embed_dim),
                     nn.SiLU(),
                     nn.Linear(s_embed_dim, s_embed_dim),
@@ -229,10 +224,11 @@ class KingmaUNet(nn.Module):
             else:
                 s = torch.arange(MAX_EMBED_SIZE).reshape(-1, 1) * 1000 / s_lengthscale
                 semb = torch.cat([torch.sin(s * semb_sin), torch.cos(s * semb_sin)], dim=1)
-                self.S_embed_sinusoid = nn.Embedding(MAX_EMBED_SIZE, s_dim)
-                self.S_embed_sinusoid.weight.data = semb
+                s_embed_module = nn.Embedding(MAX_EMBED_SIZE, s_dim)
+                s_embed_module.weight.data = semb
+                self.S_embed_sinusoid = s_embed_module
                 s_embed_dim = 0
-                self.S_embed_nn = nn.Identity()
+                self.S_embed_nn: nn.Module = nn.Identity()  # type: ignore[no-redef]
             if semb_style != "u_inject":
                 s_embed_dim = 0
         else:
@@ -250,6 +246,7 @@ class KingmaUNet(nn.Module):
         self.not_logistic_pars = not_logistic_pars
 
         self.input_logits = input_logits
+        self.x_embed: nn.Module
         if not self.input_logits:
             self.x_embed = nn.Embedding(N, ch)
         else:
@@ -275,6 +272,7 @@ class KingmaUNet(nn.Module):
 
         # Class embedding
         self.cond = num_classes > 1
+        self.class_embed: nn.Embedding | None
         if self.cond:
             self.class_embed = nn.Embedding(num_classes, time_embed_dim)
         else:
@@ -283,7 +281,7 @@ class KingmaUNet(nn.Module):
         # Downsampling
         self.conv_in = nn.Conv2d(in_channels, ch, 3, padding=1)
         self.down_blocks = nn.ModuleList()
-        for i_level in range(self.n_layers):
+        for _i_level in range(self.n_layers):
             block = nn.ModuleList()
             block.append(
                 ResnetBlock(ch, ch, time_embed_dim, dropout, s_embed_dim, cond=self.cond, film=film)
@@ -307,7 +305,7 @@ class KingmaUNet(nn.Module):
 
         # Upsampling
         self.up_blocks = nn.ModuleList()
-        for i_level in range(self.n_layers + 1):
+        for _i_level in range(self.n_layers + 1):
             block = nn.ModuleList()
             block.append(
                 ResnetBlock(
@@ -366,6 +364,7 @@ class KingmaUNet(nn.Module):
             Per-pixel class logits, shape (B, C, H, W, N).
         """
         B, C, H, W, *_ = x.shape
+        x_onehot: torch.Tensor | int
         if not self.input_logits:
             x_onehot = F.one_hot(x.long(), num_classes=self.N).float()
             x = self.x_embed(x.permute(0, 2, 3, 1))
@@ -403,12 +402,14 @@ class KingmaUNet(nn.Module):
             semb = None
 
         # Class embedding
-        if y is not None and self.num_classes > 1:
-            yemb = self.class_embed(y)
-        else:
-            yemb = None
+        yemb = (
+            self.class_embed(y)
+            if y is not None and self.num_classes > 1 and self.class_embed is not None
+            else None
+        )
 
         # Reshape output
         h = self.flat_unet(x, temb, yemb, semb)
         h = h[:, :, :H, :W].reshape(B, C, self.N, H, W).permute((0, 1, 3, 4, 2))
-        return h + self.not_logistic_pars * x_onehot
+        out: torch.Tensor = h + self.not_logistic_pars * x_onehot
+        return out

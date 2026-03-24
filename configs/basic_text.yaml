@@ -1,8 +1,11 @@
-# SCUD paper main results configuration
-# CIFAR-10 with B=256 states, 32-layer UNet
+# SCUD text generation config (LM1B with BERT tokenizer)
 data:
-    data: CIFAR10
-    N: 256
+    data: lm1b
+    hf_dataset: dvruette/lm1b
+    N: 30522  # BERT vocab size
+    tokenizer_name_or_path: bert-base-uncased
+    block_size: 1024
+    wrap: true
 
 model:
     seed: 0
@@ -10,10 +13,8 @@ model:
     gamma: 0
     schedule_type: mutual_information
     forward_kwargs:
-        type: gaussian
-        normalized: false
-        bandwidth: 0.05
-    logistic_pars: true
+        type: uniform
+    logistic_pars: false
     t_max: 0.999
     restart: false
     n_T: 200
@@ -23,9 +24,9 @@ architecture:
     nn_params:
         s_lengthscale: 50
         time_lengthscale: 1
-        n_layers: 32
+        n_layers: 8
         time_embed_dim: 0
-        not_logistic_pars: false
+        not_logistic_pars: true
         semb_style: u_inject
         s_embed_dim: 512
         film: true
@@ -35,13 +36,13 @@ architecture:
     width: 32
 
 train:
-    batch_size: 64
-    n_epoch: 100
+    batch_size: 16
+    n_epoch: 1
     lr: 0.0002
     grad_clip_val: 1
     weight_decay: 0
-    accumulate: 4
-    ema: true
+    accumulate: 1
+    ema: false
     precision: "32-true"  # Options: "32-true", "16-mixed", "bf16-mixed"
 
 sampling:

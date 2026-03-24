@@ -52,9 +52,7 @@ def kls(dist1: torch.Tensor, dist2: torch.Tensor, eps: float | None = None) -> t
     return out
 
 
-def convert_to_distribution(
-    x_0: torch.Tensor, num_classes: int, eps: float
-) -> torch.Tensor:
+def convert_to_distribution(x_0: torch.Tensor, num_classes: int, eps: float) -> torch.Tensor:
     """Convert data to log-probability representation.
 
     Args:
@@ -66,7 +64,7 @@ def convert_to_distribution(
         Log-probabilities tensor of shape (..., num_classes).
     """
     # returns log probs of x_0 as a distribution
-    if x_0.dtype == torch.int64 or x_0.dtype == torch.int32:
+    if x_0.dtype in (torch.int64, torch.int32):
         x_0_logits = torch.log(torch.nn.functional.one_hot(x_0, num_classes) + eps)
     else:
         x_0_logits = x_0.clone()
@@ -84,7 +82,7 @@ def convert_to_probs(x_0: torch.Tensor, num_classes: int) -> torch.Tensor:
         Probability tensor of shape (..., num_classes).
     """
     # returns probs of x_0 as a distribution. input is either indices or logits
-    if x_0.dtype == torch.int64 or x_0.dtype == torch.int32:
+    if x_0.dtype in (torch.int64, torch.int32):
         x_0_probs = torch.nn.functional.one_hot(x_0, num_classes)
     else:
         x_0_probs = torch.softmax(x_0.clone(), dim=-1)
@@ -93,7 +91,7 @@ def convert_to_probs(x_0: torch.Tensor, num_classes: int) -> torch.Tensor:
 
 def get_inf_gen(
     forward_kwargs: dict[str, object], num_classes: int, data_dir: str = "data"
-) -> torch.Tensor:
+) -> torch.Tensor:  # noqa: C901
     """Construct the infinitesimal generator matrix L for the forward process.
 
     Builds the rate matrix that defines the continuous-time Markov chain used
@@ -118,7 +116,8 @@ def get_inf_gen(
         bandwidth = forward_kwargs["bandwidth"]
         range_ = torch.arange(num_classes)
         diff_mat = (range_[:, None] - range_[None, :]) ** 2
-        L = torch.exp(-diff_mat / (2 * (bandwidth * num_classes) ** 2))
+        bw = float(bandwidth)  # type: ignore[arg-type]
+        L = torch.exp(-diff_mat / (2 * (bw * num_classes) ** 2))
         L = L / (L.sum(-1).max() - 1)
         L.diagonal().fill_(0)
         L[range_, range_] = -L.sum(-1)
@@ -170,32 +169,29 @@ def get_inf_gen(
                 blosum_matrix[ind_i, ind_j] = load_matrix[i, j]
         # X_ij = BLOSUM_ij * p(aa_j) = p(aa_j | aa_i)
         cond_liks = (2.0 ** (blosum_matrix / 2)) * aa_freq[None, :]
-        cond_liks = cond_liks ** forward_kwargs["beta"]
+        cond_liks = cond_liks ** float(forward_kwargs["beta"])  # type: ignore[arg-type]
         cond_liks = cond_liks / cond_liks.sum(-1)[:, None]
         L = cond_liks - np.eye(len(cond_liks))
         # break up
-        l, V = np.linalg.eig(cond_liks[:20, :20])
+        eig_vals, V = np.linalg.eig(cond_liks[:20, :20])
         V_inv = np.linalg.inv(V)
 
         # alpha
-        alpha = forward_kwargs["alpha"]
-        if alpha > 0:
-            evals = (l**alpha - 1)[None, :] / alpha
-        else:
-            evals = np.log(l)
+        alpha = float(forward_kwargs["alpha"])  # type: ignore[arg-type]
+        evals = (eig_vals**alpha - 1)[None, :] / alpha if alpha > 0 else np.log(eig_vals)
         L[:20, :20] = (V * evals) @ V_inv
         L[20:] *= -np.diagonal(L).min()
         L[L < 0] = 0
         L = torch.tensor(L).float()
         range_ = torch.arange(num_classes)
         L[range_, range_] = -L.sum(-1)
-    if "make_sym" in forward_kwargs.keys() and forward_kwargs["make_sym"]:
+    if forward_kwargs.get("make_sym"):
         L = (L + L.T) / 2
         range_ = torch.arange(num_classes)
         L.diagonal().fill_(0)
         L[range_, range_] = -L.sum(-1)
-    if ("normalize" in forward_kwargs.keys() and forward_kwargs["normalize"]) or (
-        "normalized" in forward_kwargs.keys() and forward_kwargs["normalized"]
+    if ("normalize" in forward_kwargs and forward_kwargs["normalize"]) or (
+        "normalized" in forward_kwargs and forward_kwargs["normalized"]
     ):
         L = L / (-L.diagonal()[:, None])
         range_ = torch.arange(num_classes)
@@ -289,9 +285,9 @@ def sample_index_S(S: torch.Tensor) -> tuple[int, ...]:
     sampled_flat_index = torch.multinomial(S_flat, num_samples=1)
 
     # Convert the flat index back to multidimensional index
-    sampled_index = np.unravel_index(sampled_flat_index.item(), S.shape)
+    sampled_index = np.unravel_index(int(sampled_flat_index.item()), S.shape)
 
-    return sampled_index
+    return tuple(int(x) for x in sampled_index)
 
 
 def log1p(x: torch.Tensor) -> torch.Tensor:

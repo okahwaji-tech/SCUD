@@ -1,4 +1,5 @@
 """Shared test fixtures for SCUD test suite."""
+
 from __future__ import annotations
 
 from omegaconf import OmegaConf

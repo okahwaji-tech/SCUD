@@ -10,6 +10,8 @@ Reference: "Why Masking Diffusion Works" (NeurIPS 2025), Section 6.2.
 
 from __future__ import annotations
 
+from typing import cast
+
 import torch
 from tqdm import tqdm
 
@@ -43,7 +45,7 @@ class MaskingDiffusion(SCUD):
         logistic_pars: bool = False,
         **kwargs: object,
     ) -> None:
-        forward_kwargs = {"type": "uniform"}
+        forward_kwargs: dict[str, object] = {"type": "uniform"}
         gamma = 1 / num_classes
         if "gamma" in kwargs:
             del kwargs["gamma"]
@@ -67,14 +69,20 @@ class MaskingDiffusion(SCUD):
         # in principle we could also speed up sampling by ignoring S>1
 
     def base_predict(
-        self, x_t: torch.Tensor, t: torch.Tensor, attn_mask: torch.Tensor | None, S: torch.Tensor
+        self,
+        x_t: torch.Tensor,
+        t: torch.Tensor,
+        attn_mask: torch.Tensor | None,
+        S: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        assert S is not None
         masked_pos = S > 0
         masked_x_t = torch.where(masked_pos, self.num_classes, x_t)
         masked_x_t = torch.where(
-            attn_mask == 1, masked_x_t, x_t
+            cast(torch.Tensor, attn_mask) == 1, masked_x_t, x_t
         )  # don't mask pos that are already masked
-        return self.x0_model(masked_x_t, t, attn_mask, S=S)[..., :-1]
+        result: torch.Tensor = self.x0_model(masked_x_t, t, attn_mask, S=S)[..., :-1]
+        return result
 
     def forward(
         self, x: torch.Tensor, attn_mask: torch.Tensor | None = None
@@ -111,19 +119,20 @@ class MaskingDiffusion(SCUD):
             "ce_loss": ce_loss.detach().item(),
         }
 
-    def sample_sequence(
+    def sample_sequence(  # type: ignore[override]
         self,
         x: torch.Tensor,
         attn_mask: torch.Tensor | None = None,
         n_T: int = 200,
         stride: int = 10,
+        **kwargs: object,
     ) -> list[torch.Tensor]:
         t = self.t_max * torch.ones(x.shape[0], device=x.device)
         t = t * 0 + 1e-6
         S = (1.0 + 0.0 * x).long()  # this is the only line changed
         steps = 0
         images = []
-        n_steps = torch.tensor([S[b].sum() for b in range(len(S))]).max().item()
+        n_steps = int(torch.tensor([S[b].sum() for b in range(len(S))]).max().item())
         pbar = tqdm(total=n_steps, unit="iteration", position=0, leave=True)
         trans_step = max([n_steps // n_T, 1])
         while S.sum() > 0:

@@ -42,6 +42,7 @@ train:
     weight_decay: 0
     accumulate: 1
     ema: true
+    precision: "32-true"  # Options: "32-true", "16-mixed", "bf16-mixed"
 
 sampling:
     gen_trans_step: 2048

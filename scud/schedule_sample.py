@@ -14,7 +14,9 @@ from collections.abc import Callable
 import torch
 
 
-def sample_n_transitions(beta_t: torch.Tensor, batch_size: int, times: torch.Tensor) -> torch.Tensor:
+def sample_n_transitions(
+    beta_t: torch.Tensor, batch_size: int, times: torch.Tensor
+) -> torch.Tensor:
     """For a bunch of betas and times, simulate # transitions before
     time. Repeat batch_size # of times to get [times_dim] + batch_size.
     Note t=0 gives the number of transitions after 1 timestep.

@@ -38,7 +38,7 @@ def _load_model(cfg: DictConfig) -> torch.nn.Module:
     ckpt_path = _resolve_checkpoint(cfg.model.restart)
     model_cls = MODEL_CLASS_MAP[cfg.model.model]
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = model_cls.load_from_checkpoint(ckpt_path, map_location=device)
+    model: torch.nn.Module = model_cls.load_from_checkpoint(ckpt_path, map_location=device)  # type: ignore[attr-defined,assignment]
     model.eval()
     model.to(device)
     return model
@@ -97,6 +97,7 @@ def run_sampling(cfg: DictConfig) -> None:
     from scud.data import get_dataloaders
 
     _, test_dataloader = get_dataloaders(cfg)
+    assert test_dataloader is not None
     sample_batch = next(iter(test_dataloader))
     if isinstance(sample_batch, tuple):
         sample_x, sample_a = sample_batch
@@ -108,8 +109,8 @@ def run_sampling(cfg: DictConfig) -> None:
         sample_a = None
 
     # Generate initial noise from stationary distribution
-    with torch.no_grad():
-        p = model.get_stationary()
+    with torch.inference_mode():
+        p = model.get_stationary()  # type: ignore[operator]
         n_elements = sample_x.shape[1:].numel()
         noise_samples = torch.multinomial(p, num_samples=num_samples * n_elements, replacement=True)
         init_noise = noise_samples.reshape((num_samples,) + sample_x.shape[1:]).to(device)
@@ -120,7 +121,7 @@ def run_sampling(cfg: DictConfig) -> None:
 
         # Run sampling
         print(f"Generating {num_samples} samples with {gen_trans_step} denoising steps...")
-        images = model.sample_sequence(
+        images = model.sample_sequence(  # type: ignore[operator]
             init_noise,
             attn_mask,
             n_T=gen_trans_step,
@@ -139,4 +140,4 @@ def run_sampling(cfg: DictConfig) -> None:
     if is_protein:
         _save_protein_samples(final_samples, output_dir)
     else:
-        _save_image_samples(final_samples, model.num_classes, output_dir)
+        _save_image_samples(final_samples, model.num_classes, output_dir)  # type: ignore[arg-type]

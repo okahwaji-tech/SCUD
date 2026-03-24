@@ -41,9 +41,13 @@ def get_model_setup(
         "DiscreteScheduleCondition",
         "MaskingDiffusion",
     ]
-    nn_params = cfg.architecture.nn_params
-    nn_params = OmegaConf.to_container(nn_params, resolve=True) if nn_params is not None else {}
-    if cfg.architecture.x0_model_class in image_nn_name_dict:
+    raw_params = cfg.architecture.nn_params
+    nn_params: dict[str, object] = (
+        dict(OmegaConf.to_container(raw_params, resolve=True))  # type: ignore[arg-type]
+        if raw_params is not None
+        else {}
+    )
+    if cfg.architecture.x0_model_class in image_nn_name_dict:  # noqa: RET503
         nn_params = {
             "n_channel": 1 if cfg.data.data == "MNIST" else 3,
             "N": cfg.data.N + (cfg.model.model == "MaskingDiffusion"),
@@ -62,3 +66,4 @@ def get_model_setup(
             **nn_params,
         }
         return protein_nn_name_dict[cfg.architecture.x0_model_class], nn_params
+    raise ValueError(f"Unknown model class: {cfg.architecture.x0_model_class}")

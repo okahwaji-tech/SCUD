@@ -10,6 +10,7 @@ Reference: "Why Masking Diffusion Works" (NeurIPS 2025), Section 3.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 
 import torch
@@ -18,6 +19,8 @@ from scud.mutual_info_schedule import get_a_b_func_mi
 
 from .schedule_sample import sample_n_transitions_cont
 from .trainer import DiffusionTrainer
+
+logger = logging.getLogger(__name__)
 
 
 def get_betas(schedule_type: str) -> Callable[..., tuple[Callable[..., torch.Tensor], ...]]:
@@ -75,7 +78,7 @@ class ContinuousTimeDiffusion(DiffusionTrainer):
         t_max: float = 0.999,
         **kwargs: object,
     ) -> None:
-        super().__init__(**kwargs)
+        super().__init__(**kwargs)  # type: ignore[arg-type]
         self.save_hyperparameters(ignore=["x0_model_class"])
         self.hparams.update(x0_model_class=x0_model_class.__name__)
         self.x0_model = x0_model_class(**nn_params)
@@ -92,13 +95,22 @@ class ContinuousTimeDiffusion(DiffusionTrainer):
         raise NotImplementedError
 
     def base_predict(
-        self, x_t: torch.Tensor, t: torch.Tensor, attn_mask: torch.Tensor | None, S: torch.Tensor | None = None
+        self,
+        x_t: torch.Tensor,
+        t: torch.Tensor,
+        attn_mask: torch.Tensor | None,
+        S: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Run the denoiser network on noisy data."""
-        return self.x0_model(x_t, t, attn_mask, S).to(torch.float32)
+        result: torch.Tensor = self.x0_model(x_t, t, attn_mask, S).to(torch.float32)
+        return result
 
     def model_predict(
-        self, x_t: torch.Tensor, t: torch.Tensor, attn_mask: torch.Tensor | None, S: torch.Tensor | None = None
+        self,
+        x_t: torch.Tensor,
+        t: torch.Tensor,
+        attn_mask: torch.Tensor | None,
+        S: torch.Tensor | None = None,
     ) -> torch.Tensor:
         pred = self.base_predict(x_t, t, attn_mask, S)
         if not self.logistic_pars:
@@ -113,7 +125,8 @@ class ContinuousTimeDiffusion(DiffusionTrainer):
             log_cdf_min = torch.nn.LogSigmoid()(inv_scale * (bin_centers - 0.5 * bin_width))
             log_cdf_max = torch.nn.LogSigmoid()(inv_scale * (bin_centers + 0.5 * bin_width))
             logits = log_cdf_max + torch.log1p(-torch.exp(log_cdf_min - log_cdf_max) + self.eps)
-            return logits
+            result: torch.Tensor = logits
+            return result
 
     def q_posterior_logits(
         self, x_0: torch.Tensor, x_t: torch.Tensor, t: torch.Tensor, S: torch.Tensor | None = None
@@ -127,11 +140,14 @@ class ContinuousTimeDiffusion(DiffusionTrainer):
         """Sample from the forward process at time t."""
         raise NotImplementedError
 
+    log_alpha: Callable[..., torch.Tensor]  # set dynamically in subclasses
+    beta: Callable[..., torch.Tensor]  # set dynamically in subclasses
+
     def sample_point(
         self, x: torch.Tensor, attn_mask: torch.Tensor | None = None, rand_shape: int | None = None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         t = torch.rand(x.shape[0], device=x.device) * self.t_max
-        S = sample_n_transitions_cont(self.log_alpha, x[0].flatten().shape[0], t)
+        S = sample_n_transitions_cont(self.log_alpha, x[0].flatten().shape[0], t)  # type: ignore[arg-type]
         S = S.swapaxes(0, 1).reshape(*x.shape).long()
         x_t = self.x_t_sample(
             x,
@@ -144,7 +160,7 @@ class ContinuousTimeDiffusion(DiffusionTrainer):
         )
         return t, S, x_t
 
-    def load_state_dict(
+    def load_state_dict(  # type: ignore[override]
         self, state_dict: dict[str, torch.Tensor], strict: bool = False
     ) -> tuple[list[str], list[str]]:
         # Call the parent class's load_state_dict method
@@ -193,15 +209,15 @@ class ContinuousTimeDiffusion(DiffusionTrainer):
         return missing_keys, unexpected_keys
 
     @classmethod
-    def load_from_checkpoint(
+    def load_from_checkpoint(  # type: ignore[override]
         cls, checkpoint_path: str, map_location: str | torch.device | None = None, **kwargs: object
     ) -> ContinuousTimeDiffusion:
-        print("Loading checkpoint ...")
-        checkpoint = torch.load(checkpoint_path, map_location=map_location)
+        logger.info("Loading checkpoint ...")
+        checkpoint = torch.load(checkpoint_path, map_location=map_location, weights_only=True)
         hparams = checkpoint["hyper_parameters"]
 
         # Get the x0_model_class
-        x0_model_class_map = {}
+        x0_model_class_map: dict[str, type] = {}
         try:
             from scud.unet import KingmaUNet
 
@@ -238,8 +254,8 @@ class ContinuousTimeDiffusion(DiffusionTrainer):
         hparams["x0_model_class"] = x0_model_class
 
         # Create model
-        print("Setting up class ...")
+        logger.info("Setting up class ...")
         model = cls(**hparams)
-        print("Loading params ...")
+        logger.info("Loading params ...")
         model.load_state_dict(checkpoint["state_dict"])
         return model

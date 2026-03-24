@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from omegaconf import DictConfig
 from torch.utils.data import DataLoader
 
 
 def get_dataloaders(
-    cfg: object,
+    cfg: DictConfig,
 ) -> tuple[DataLoader, DataLoader] | tuple[DataLoader | None, DataLoader | None]:
     """Build train/test dataloaders based on ``cfg.data.data``."""
     from scud.data.image import get_img_dataloaders, image_data_name_dict
@@ -21,4 +22,7 @@ def get_dataloaders(
     elif cfg.data.data in protein_data_name_dict:
         return get_protein_dataloaders(cfg)
     else:
-        pass
+        all_supported = (
+            list(image_data_name_dict) + list(text_data_name_dict) + list(protein_data_name_dict)
+        )
+        raise ValueError(f"Unknown dataset '{cfg.data.data}'. Supported: {all_supported}")

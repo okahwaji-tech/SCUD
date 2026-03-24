@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import tempfile
 
+import lightning.pytorch as pl
 import numpy as np
-import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
 import wandb
+from lightning.pytorch.utilities import rank_zero_only
 from PIL import Image
-from pytorch_lightning.utilities import rank_zero_only
 from torchvision.utils import make_grid
 from tqdm import tqdm
 
@@ -48,8 +48,9 @@ def get_gif(
     if images is not None:
         # image sequences to gif
         gif = []
+        num_classes: int = model.num_classes  # type: ignore[assignment]
         for image in images:
-            x_as_image = make_grid(image.float() / (model.num_classes - 1), nrow=2)
+            x_as_image = make_grid(image.float() / (num_classes - 1), nrow=2)
             img = x_as_image.permute(1, 2, 0).cpu().numpy()
             img = (img * 255).astype(np.uint8)
             gif.append(Image.fromarray(img))
@@ -99,18 +100,20 @@ def get_text(
         last_token = tokens[-1]
         stride_tokens = tokens[:: (gen_trans_step // 3) // 10 + 1]
         if sample_a is not None:
+            assert attn_mask is not None
             if hasattr(tokenizer, "pad_id"):
-                pad_id = tokenizer.pad_id
+                pad_id = tokenizer.pad_id  # type: ignore[attr-defined]
             elif hasattr(tokenizer, "pad_token_id"):
-                pad_id = tokenizer.pad_token_id
+                pad_id = tokenizer.pad_token_id  # type: ignore[attr-defined]
             last_token[attn_mask == 0.0] = pad_id
             for t in stride_tokens:
                 t[attn_mask == 0.0] = pad_id
         if hasattr(tokenizer, "decode"):
-            dt = lambda tok: [tokenizer.decode(t) for t in tok]
+            dt = lambda tok: [tokenizer.decode(t) for t in tok]  # type: ignore[union-attr]
         elif hasattr(tokenizer, "untokenize"):
+            assert attn_mask is not None
             dt = lambda tok: [
-                tokenizer.untokenize(t)[: int(a.sum())] for t, a in zip(tok, attn_mask)
+                tokenizer.untokenize(t)[: int(a.sum())] for t, a in zip(tok, attn_mask, strict=True)  # type: ignore[union-attr]
             ]
         return dt(last_token), [dt(t) for t in stride_tokens]
     else:
@@ -154,14 +157,31 @@ class DiffusionTrainer(pl.LightningModule):
         self.weight_decay = weight_decay
         # logging
         self.sample_x = None
-        self.validation_step_outputs = []
+        self.validation_step_outputs: list[dict[str, float]] = []
         self.gen_trans_step = gen_trans_step
         self.n_gen_images = n_gen_images
         self.n_stat_samples = n_stat_samples
         self.tokenizer = tokenizer
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, dict[str, float]]:
+    def forward(
+        self, x: torch.Tensor, attn_mask: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, dict[str, float]]:
         """Compute the training loss. Must be overridden by subclasses."""
+        raise NotImplementedError
+
+    def get_stationary(self) -> torch.Tensor:
+        """Return the stationary distribution. Must be overridden."""
+        raise NotImplementedError
+
+    def sample_sequence(
+        self,
+        x: torch.Tensor,
+        attn_mask: torch.Tensor | None = None,
+        n_T: int = 200,
+        stride: int = 10,
+        **kwargs: object,
+    ) -> list[torch.Tensor]:
+        """Generate samples. Must be overridden."""
         raise NotImplementedError
 
     def get_kl_t1(self, x: torch.Tensor) -> torch.Tensor:
@@ -174,9 +194,10 @@ class DiffusionTrainer(pl.LightningModule):
 
     def calc_p0(self, dataloader: object) -> None:
         # get stationary dist
-        p0 = torch.ones(self.num_classes)
+        num_classes: int = self.num_classes  # type: ignore[assignment]
+        p0 = torch.ones(num_classes)
         pbar = tqdm(total=self.n_stat_samples)
-        for i, batch in tqdm(enumerate(dataloader)):
+        for _i, batch in tqdm(enumerate(dataloader)):  # type: ignore[arg-type]
             if p0.sum() > self.n_stat_samples:
                 break
             if isinstance(batch, tuple):  # image datasets
@@ -184,9 +205,9 @@ class DiffusionTrainer(pl.LightningModule):
             elif isinstance(batch, dict):  # text datasets
                 x = batch["input_ids"]
             new = (
-                F.one_hot(x.long(), num_classes=self.num_classes)
+                F.one_hot(x.long(), num_classes=num_classes)
                 .to(torch.float32)
-                .view((-1, self.num_classes))
+                .view((-1, num_classes))
                 .sum(0)
             )
             p0 = p0 + new
@@ -210,7 +231,8 @@ class DiffusionTrainer(pl.LightningModule):
 
         self.log("train_loss", info["vb_loss"], sync_dist=True)
         self.log("train_ce_loss", info["ce_loss"], sync_dist=True)
-        return loss
+        result: torch.Tensor = loss
+        return result
 
     def validation_step(self, batch: object, batch_idx: int) -> dict[str, float]:
         if isinstance(batch, tuple):  # protein datasets
@@ -244,15 +266,14 @@ class DiffusionTrainer(pl.LightningModule):
     ):
         # generate image
         if self.sample_x is not None:
-            with torch.no_grad():
+            with torch.inference_mode():
                 if self.tokenizer is None:
                     gif_fname, img_fname = get_gif(
                         self.sample_x, self.sample_a, self, self.gen_trans_step, self.n_gen_images
                     )
-                    if gif_fname is not None:
-                        if isinstance(self.logger, pl.loggers.WandbLogger):
-                            wandb.log({"sample_gif": wandb.Image(gif_fname)})
-                            wandb.log({"sample_gif_last": wandb.Image(img_fname)})
+                    if gif_fname is not None and isinstance(self.logger, pl.loggers.WandbLogger):
+                        self.logger.experiment.log({"sample_gif": wandb.Image(gif_fname)})
+                        self.logger.experiment.log({"sample_gif_last": wandb.Image(img_fname)})
                 else:
                     last_text, gen_text = get_text(
                         self.sample_x,
@@ -262,30 +283,22 @@ class DiffusionTrainer(pl.LightningModule):
                         self.n_gen_images,
                         self.tokenizer,
                     )
-                    if last_text is not None:
-                        if isinstance(self.logger, pl.loggers.WandbLogger):
-                            joined_text = "\n\n".join(last_text)
-                            wandb.log(
-                                {"sample_text": wandb.Table(columns=["text"], data=[[joined_text]])}
-                            )
-                            joined_text_gen = ["\n\n".join(t) for t in gen_text]
-                            wandb.log(
-                                {
-                                    "sample_text_process": wandb.Table(
-                                        columns=["text"], data=[[jt] for jt in joined_text_gen]
-                                    )
-                                }
-                            )
+                    if last_text is not None and isinstance(self.logger, pl.loggers.WandbLogger):
+                        joined_text = "\n\n".join(last_text)
+                        self.logger.experiment.log(
+                            {"sample_text": wandb.Table(columns=["text"], data=[[joined_text]])}
+                        )
+                        joined_text_gen = ["\n\n".join(t) for t in gen_text]
+                        self.logger.experiment.log(
+                            {
+                                "sample_text_process": wandb.Table(
+                                    columns=["text"], data=[[jt] for jt in joined_text_gen]
+                                )
+                            }
+                        )
 
-    def on_before_optimizer_step(self, optimizer: torch.optim.Optimizer) -> None:
-        # Gradient clipping
-        torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=self.grad_clip_val)
-
-    def configure_optimizers(self) -> dict[str, object]:
+    def configure_optimizers(self) -> dict[str, object]:  # type: ignore[override]
         optimizer = torch.optim.AdamW(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         return {
             "optimizer": optimizer,
-            "gradient_clip_val": self.grad_clip_val,
-            "weight_decay": self.weight_decay,
-            "gradient_clip_algorithm": "norm",
         }

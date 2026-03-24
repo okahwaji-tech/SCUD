@@ -1,7 +1,7 @@
 """Tests for mathematical utility functions (scud.utils)."""
+
 from __future__ import annotations
 
-import pytest
 import torch
 
 from scud.utils import convert_to_probs, get_inf_gen, kls

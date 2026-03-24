@@ -1,19 +1,20 @@
 """Internal training logic extracted from train.py."""
 
 import glob
+import logging
 import os
 
 import certifi
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
 import wandb
 from evodiff.utils import Tokenizer
+from lightning.pytorch import Trainer
+from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch.loggers import WandbLogger
+from lightning.pytorch.strategies import DDPStrategy
+from lightning.pytorch.utilities import rank_zero_only
 from omegaconf import DictConfig, OmegaConf
-from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks import ModelCheckpoint
-from pytorch_lightning.loggers import WandbLogger
-from pytorch_lightning.strategies import DDPStrategy
-from pytorch_lightning.utilities import rank_zero_only
 
 from scud.classical_diffusion import ClassicalDiffusion
 from scud.data import get_dataloaders
@@ -24,27 +25,33 @@ from scud.scud import SCUD
 
 os.environ["SSL_CERT_FILE"] = certifi.where()
 
+logger = logging.getLogger(__name__)
+
 
 def run_training(cfg: DictConfig) -> None:
     """Run the full training pipeline for SCUD/Masking/Classical diffusion models."""
 
     @rank_zero_only
-    def init_wandb():
+    def init_wandb() -> None:
         wandb.login()
-        wandb.init()
 
     init_wandb()
+    ##### Prepare data (auto-download if missing)
+    from scud.data.prepare import prepare_data
+
+    prepare_data(cfg)
+
     ##### Load data
     pl.seed_everything(cfg.model.seed, workers=True)
-    print("Getting dataloaders.")
+    logger.info("Getting dataloaders.")
     train_dataloader, test_dataloader = get_dataloaders(cfg)
-    tokenizer = train_dataloader.tokenizer if hasattr(train_dataloader, "tokenizer") else None
+    tokenizer = getattr(train_dataloader, "tokenizer", None)
 
     ##### Setup x0_model
-    print("Setting up model.")
+    logger.info("Setting up model.")
     x0_model_class, nn_params = get_model_setup(cfg, tokenizer)
 
-    print(cfg)
+    logger.info("Config: %s", cfg)
 
     ##### Pick model
     model_name_dict = {
@@ -65,13 +72,13 @@ def run_training(cfg: DictConfig) -> None:
             t_max=cfg.model.t_max,
             seed=cfg.model.seed,
             tokenizer=tokenizer if cfg.data.data != "uniref50" else Tokenizer(),
-            **OmegaConf.to_container(cfg.train, resolve=True),
+            **OmegaConf.to_container(cfg.train, resolve=True),  # type: ignore[arg-type]
         )
         ckpt_path = None
     else:
         ckpt_path = f"checkpoints/{cfg.model.restart}"
         ckpt_path = max(glob.glob(os.path.join(ckpt_path, "*.ckpt")), key=os.path.getmtime)
-        model = model_name_dict[cfg.model.model].load_from_checkpoint(ckpt_path)
+        model = model_name_dict[cfg.model.model].load_from_checkpoint(ckpt_path)  # type: ignore[attr-defined]
 
     ##### Load data
     model.pre_configure_model(train_dataloader)
@@ -94,7 +101,7 @@ def run_training(cfg: DictConfig) -> None:
     trainer = Trainer(
         max_epochs=cfg.train.n_epoch,
         accelerator="auto",
-        devices=torch.cuda.device_count(),
+        devices="auto",
         logger=wandb_logger,
         strategy=DDPStrategy(broadcast_buffers=True),
         callbacks=(
@@ -108,6 +115,9 @@ def run_training(cfg: DictConfig) -> None:
         ),
         val_check_interval=val_check_interval,
         accumulate_grad_batches=cfg.train.accumulate,
+        precision=cfg.train.get("precision", "32-true"),
+        gradient_clip_val=cfg.train.grad_clip_val,
+        gradient_clip_algorithm="norm",
     )
     trainer.fit(lightning_model, train_dataloader, test_dataloader, ckpt_path=ckpt_path)
     wandb.finish()

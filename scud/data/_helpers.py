@@ -10,13 +10,15 @@ import torch
 def fsspec_exists(filename: str) -> bool:
     """Check if a file exists using fsspec."""
     fs, _ = fsspec.core.url_to_fs(filename)
-    return fs.exists(filename)
+    result: bool = fs.exists(filename)
+    return result
 
 
 def fsspec_listdir(dirname: str) -> list[str]:
     """Listdir in manner compatible with fsspec."""
     fs, _ = fsspec.core.url_to_fs(dirname)
-    return fs.ls(dirname)
+    result: list[str] = fs.ls(dirname)
+    return result
 
 
 def fsspec_mkdirs(dirname: str, exist_ok: bool = True) -> None:

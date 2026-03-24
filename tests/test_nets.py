@@ -1,4 +1,5 @@
 """Tests for neural network model registry and configuration (scud.nets)."""
+
 from __future__ import annotations
 
 import sys
@@ -10,6 +11,7 @@ pytest.importorskip("omegaconf")
 
 sys.path.insert(0, str(Path(__file__).parent))
 from conftest import make_config
+
 from scud.nets import get_model_setup
 
 

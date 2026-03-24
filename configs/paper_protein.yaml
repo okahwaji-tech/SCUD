@@ -36,6 +36,7 @@ train:
     accumulate: 2
     ema: true
     pack: true
+    precision: "32-true"  # Options: "32-true", "16-mixed", "bf16-mixed"
 
 sampling:
     gen_trans_step: 2048

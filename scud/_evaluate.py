@@ -33,19 +33,20 @@ def run_evaluation(cfg: DictConfig) -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     print(f"Loading model from {ckpt_path}...")
-    model = model_cls.load_from_checkpoint(ckpt_path, map_location=device)
+    model = model_cls.load_from_checkpoint(ckpt_path, map_location=device)  # type: ignore[attr-defined]
     model.eval()
     model.to(device)
 
     print("Loading test data...")
     _, test_dataloader = get_dataloaders(cfg)
+    assert test_dataloader is not None
 
     vb_losses: list[float] = []
     kl_t1s: list[float] = []
     n_batches = 0
 
     print("Evaluating...")
-    with torch.no_grad():
+    with torch.inference_mode():
         for batch in tqdm(test_dataloader, desc="Eval"):
             if isinstance(batch, tuple):
                 x, attn_mask = batch
@@ -82,6 +83,7 @@ def run_evaluation(cfg: DictConfig) -> None:
     is_image = cfg.data.data not in ("uniref50",)
     if is_image:
         # Get data dimensions from a sample batch
+        assert test_dataloader is not None
         sample_batch = next(iter(test_dataloader))
         if isinstance(sample_batch, tuple):
             sample_x = sample_batch[0]

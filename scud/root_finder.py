@@ -46,12 +46,12 @@ def root_finder(
     def bisect_step(x0, x1, f0, f1):
         return (x1 + x0) / 2
 
-    x0 = x0 * torch.ones_like(ts)
-    x1 = x1 * torch.ones_like(ts)
-    x2 = x1.clone()
+    x0_t = x0 * torch.ones_like(ts)
+    x1_t = x1 * torch.ones_like(ts)
+    x2 = x1_t.clone()
 
-    f0 = func(x0, ts)
-    f1 = func(x1, ts)
+    f0 = func(x0_t, ts)
+    f1 = func(x1_t, ts)
     f2 = f1.clone()
 
     bisect_mode = torch.ones_like(ts).bool()
@@ -59,7 +59,7 @@ def root_finder(
 
     for _ in range(max_iter):
         x2[mask] = torch.where(
-            bisect_mode, bisect_step(x0, x1, f0, f1), secant_step(x0, x1, f0, f1)
+            bisect_mode, bisect_step(x0_t, x1_t, f0, f1), secant_step(x0_t, x1_t, f0, f1)
         )[mask]
         f2[mask] = func(x2[mask], ts[mask])
         bisect_mode = torch.where(
@@ -67,8 +67,8 @@ def root_finder(
         )
 
         update_x1 = torch.sign(f2) == torch.sign(f1)
-        x0[mask] = torch.where(update_x1, x0, x1)[mask]
-        x1[mask] = x2[mask]
+        x0_t[mask] = torch.where(update_x1, x0_t, x1_t)[mask]
+        x1_t[mask] = x2[mask]
         f0[mask] = torch.where(update_x1, f0, f1)[mask]
         f1[mask] = f2[mask]
 
@@ -83,7 +83,7 @@ def newton_root_finder(
     func: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
     x0: float,
     ts: torch.Tensor,
-    min_x: torch.Tensor = torch.tensor(1e-8),
+    min_x: torch.Tensor | None = None,
     max_iter: int = 1000,
     tol: float = 1e-12,
     print_: bool = False,
@@ -105,6 +105,8 @@ def newton_root_finder(
     Returns:
         Tensor of roots with the same shape as ts.
     """
+    if min_x is None:
+        min_x = torch.tensor(1e-8)
     ts = ts.detach()
     x = x0 * torch.ones_like(ts).double()
     x = torch.maximum(x, min_x)

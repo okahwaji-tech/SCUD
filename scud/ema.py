@@ -21,11 +21,11 @@ import threading
 from collections.abc import Iterable
 from typing import Any
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
-from pytorch_lightning import Callback
-from pytorch_lightning.utilities.exceptions import MisconfigurationException
-from pytorch_lightning.utilities.rank_zero import rank_zero_info
+from lightning.pytorch import Callback
+from lightning.pytorch.utilities.exceptions import MisconfigurationException
+from lightning.pytorch.utilities.rank_zero import rank_zero_info
 
 
 class EMA(Callback):
@@ -37,7 +37,8 @@ class EMA(Callback):
     When saving, we save an additional set of parameters with the prefix `ema`.
 
     Args:
-        decay: The exponential decay used when calculating the moving average. Has to be between 0-1.
+        decay: The exponential decay used when calculating the moving average.
+            Has to be between 0-1.
         validate_original_weights: Validate the original weights, as apposed to the EMA weights.
         every_n_steps: Apply EMA every N steps.
         cpu_offload: Offload weights to CPU.
@@ -118,7 +119,7 @@ class EMA(Callback):
             yield
         finally:
             for optimizer in trainer.optimizers:
-                optimizer.save_original_optimizer_state = False
+                optimizer.save_original_optimizer_state = False  # type: ignore[attr-defined]
 
     def on_load_checkpoint(
         self, trainer: "pl.Trainer", pl_module: "pl.LightningModule", checkpoint: dict[str, Any]
@@ -126,7 +127,6 @@ class EMA(Callback):
         checkpoint_callback = trainer.checkpoint_callback
 
         # use the connector as NeMo calls the connector directly in the exp_manager when restoring.
-        connector = trainer._checkpoint_connector
         # Replace connector._ckpt_path with below to avoid calling into lightning's protected API
         ckpt_path = trainer.ckpt_path
 
@@ -135,17 +135,19 @@ class EMA(Callback):
             and checkpoint_callback is not None
             and "NeMo" in type(checkpoint_callback).__name__
         ):
-            ext = checkpoint_callback.FILE_EXTENSION
-            if ckpt_path.endswith(f"-EMA{ext}"):
+            ext = checkpoint_callback.FILE_EXTENSION  # type: ignore[attr-defined]
+            if str(ckpt_path).endswith(f"-EMA{ext}"):
                 rank_zero_info(
                     "loading EMA based weights. "
                     "The callback will treat the loaded EMA weights as the main weights"
                     " and create a new EMA copy when training."
                 )
                 return
-            ema_path = ckpt_path.replace(ext, f"-EMA{ext}")
+            ema_path = str(ckpt_path).replace(ext, f"-EMA{ext}")
             if os.path.exists(ema_path):
-                ema_state_dict = torch.load(ema_path, map_location=torch.device("cpu"))
+                ema_state_dict = torch.load(
+                    ema_path, map_location=torch.device("cpu"), weights_only=True
+                )
 
                 checkpoint["optimizer_states"] = ema_state_dict["optimizer_states"]
                 del ema_state_dict
@@ -306,7 +308,7 @@ class EMAOptimizer(torch.optim.Optimizer):
     def switch_main_parameter_weights(self, saving_ema_model: bool = False):
         self.join()
         self.in_saving_ema_model_context = saving_ema_model
-        for param, ema_param in zip(self.all_parameters(), self.ema_params):
+        for param, ema_param in zip(self.all_parameters(), self.ema_params, strict=False):  # type: ignore[var-annotated]
             self.swap_tensors(param.data, ema_param)
 
     @contextlib.contextmanager
@@ -345,7 +347,8 @@ class EMAOptimizer(torch.optim.Optimizer):
         if self.save_original_optimizer_state:
             return self.optimizer.state_dict()
 
-        # if we are in the context of saving an EMA model, the EMA weights are in the modules' actual weights
+        # if we are in the context of saving an EMA model, the EMA weights are in the
+        # modules' actual weights
         ema_params = (
             self.ema_params if not self.in_saving_ema_model_context else list(self.all_parameters())
         )
