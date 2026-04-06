@@ -1,0 +1,43 @@
+data:
+    data: CIFAR10
+    N: 64
+
+model:
+    seed: 0
+    model: SCUD_TCR
+    gamma: 0
+    schedule_type: mutual_information
+    forward_kwargs:
+        type: uniform
+    logistic_pars: false
+    t_max: 0.999
+    restart: false
+    n_T: 200
+
+architecture:
+    s_dim: 128
+    nn_params:
+        s_lengthscale: 50
+        time_lengthscale: 1
+        n_layers: 8
+        time_embed_dim: 0
+        not_logistic_pars: false
+        semb_style: u_inject
+        s_embed_dim: 512
+        film: true
+        input_logits: false
+        first_mult: false
+    x0_model_class: KingmaUNet
+    width: 32
+
+train:
+    batch_size: 16
+    n_epoch: 14
+    lr: 0.0002
+    grad_clip_val: 1
+    weight_decay: 0
+    accumulate: 1
+    ema: false
+
+sampling:
+    gen_trans_step: 2048

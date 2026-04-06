@@ -5,6 +5,7 @@ Provides the building blocks for Path B training:
   - Detached prediction and token sampling
   - SCUD backward transition (Eq. 21) for faithful state generation
   - Target noise level sampling
+  - Gradient normalization between losses
 """
 
 import torch
@@ -106,5 +107,39 @@ def sample_s_low(S):
     s_low = (torch.rand_like(S.float()) * S.float()).long()
     k = S - s_low
     return s_low, k
+
+
+def grad_norm_weight(loss_main, loss_aux, parameters):
+    """
+    Compute scaling factor so both losses contribute equal gradient magnitude.
+
+    Used for SCUD + TCR where Path A (ELBO) and Path B (unweighted CE) are
+    on different scales. Not needed for SCUM + TCR where both paths use CE.
+
+    Args:
+        loss_main: primary loss scalar (Path A)
+        loss_aux: auxiliary loss scalar (Path B)
+        parameters: model parameters to compute gradients w.r.t.
+
+    Returns:
+        weight: scalar to multiply loss_aux by (detached)
+    """
+    params = [p for p in parameters if p.requires_grad]
+
+    grad_main = torch.autograd.grad(
+        loss_main, params, retain_graph=True, allow_unused=True
+    )
+    grad_aux = torch.autograd.grad(
+        loss_aux, params, retain_graph=True, allow_unused=True
+    )
+
+    norm_main = torch.sqrt(
+        sum((g.norm() ** 2 for g in grad_main if g is not None))
+    )
+    norm_aux = torch.sqrt(
+        sum((g.norm() ** 2 for g in grad_aux if g is not None))
+    )
+
+    return (norm_main / (norm_aux + 1e-8)).detach()
 
 

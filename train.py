@@ -21,6 +21,7 @@ import pytorch_lightning as pl
 from evodiff.utils import Tokenizer
 
 from scud.scud import SCUD
+from scud.scud_tcr import SCUD_TCR
 from scud.masking_diffusion import MaskingDiffusion
 from scud.classical_diffusion import ClassicalDiffusion
 
@@ -54,6 +55,7 @@ def train(cfg: DictConfig) -> None:
     
     ##### Pick model
     model_name_dict = {"SCUD":SCUD,
+                       "SCUD_TCR":SCUD_TCR,
                        "Masking":MaskingDiffusion,
                        "Classical": ClassicalDiffusion,}
     if not cfg.model.restart:
