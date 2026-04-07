@@ -94,6 +94,13 @@ class ByteNetLMTimeNew(nn.Module):
             self.s_embed_block = TimestepEmbedderNew(d_embedding)
             self.s_embed_input.mlp[2].weight.data.zero_()
             self.s_embed_input.mlp[2].bias.data.zero_()
+            # Tau embedding (additive, zero-init for standard SCUD recovery)
+            self.tau_embed_input = TimestepEmbedderNew(2 * d_model)
+            self.tau_embed_block = TimestepEmbedderNew(d_embedding)
+            nn.init.zeros_(self.tau_embed_input.mlp[2].weight)
+            nn.init.zeros_(self.tau_embed_input.mlp[2].bias)
+            nn.init.zeros_(self.tau_embed_block.mlp[2].weight)
+            nn.init.zeros_(self.tau_embed_block.mlp[2].bias)
         if not simple_embed:
             self.embedder = nn.Embedding(n_tokens, d_aa_emb, padding_idx=padding_idx)
             self.up_embedder = nn.Linear(d_aa_emb, d_model)
@@ -135,6 +142,7 @@ class ByteNetLMTimeNew(nn.Module):
         t: torch.Tensor,
         input_mask: torch.Tensor | None = None,
         S: torch.Tensor | None = None,
+        tau: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass through the ByteNet with time/schedule conditioning.
 
@@ -143,6 +151,8 @@ class ByteNetLMTimeNew(nn.Module):
             t: Diffusion time, shape (B,).
             input_mask: Attention mask, shape (B, L).
             S: Schedule tensor for SCUD conditioning, shape (B, L).
+            tau: Holding time, shape (B, L). Optional; zero-init ensures
+                standard SCUD recovery when absent.
 
         Returns:
             Logits over vocabulary, shape (B, L, n_tokens).
@@ -156,6 +166,15 @@ class ByteNetLMTimeNew(nn.Module):
             S_out = F.silu(self.s_embed_input(S.reshape(-1))).reshape(S.shape + (-1,))
             x = modulate_fused(x, *S_out.chunk(2, dim=-1))
             c = F.silu(self.s_embed_block(S.reshape(-1))).reshape(S.shape + (-1,))
+            if tau is not None:
+                tau_out = F.silu(self.tau_embed_input(tau.reshape(-1))).reshape(
+                    tau.shape + (-1,)
+                )
+                tau_shift, _tau_scale = tau_out.chunk(2, dim=-1)
+                x = x + tau_shift  # additive only (zero-init means this starts as identity)
+                c = c + F.silu(self.tau_embed_block(tau.reshape(-1))).reshape(
+                    tau.shape + (-1,)
+                )
         else:
             t_out = F.silu(self.time_embed_input(t))[:, None, :]
             x = modulate_fused(x, *t_out.chunk(2, dim=-1))
