@@ -74,7 +74,9 @@ class MaskingDiffusion(SCUD):
         t: torch.Tensor,
         attn_mask: torch.Tensor | None,
         S: torch.Tensor | None = None,
+        tau: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        # tau intentionally unused: masking kernels destroy provenance info
         assert S is not None
         masked_pos = S > 0
         masked_x_t = torch.where(masked_pos, self.num_classes, x_t)

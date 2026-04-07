@@ -100,9 +100,13 @@ class ContinuousTimeDiffusion(DiffusionTrainer):
         t: torch.Tensor,
         attn_mask: torch.Tensor | None,
         S: torch.Tensor | None = None,
+        tau: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Run the denoiser network on noisy data."""
-        result: torch.Tensor = self.x0_model(x_t, t, attn_mask, S).to(torch.float32)
+        if tau is not None:
+            result: torch.Tensor = self.x0_model(x_t, t, attn_mask, S, tau=tau).to(torch.float32)
+        else:
+            result = self.x0_model(x_t, t, attn_mask, S).to(torch.float32)
         return result
 
     def model_predict(
@@ -111,8 +115,9 @@ class ContinuousTimeDiffusion(DiffusionTrainer):
         t: torch.Tensor,
         attn_mask: torch.Tensor | None,
         S: torch.Tensor | None = None,
+        tau: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        pred = self.base_predict(x_t, t, attn_mask, S)
+        pred = self.base_predict(x_t, t, attn_mask, S, tau=tau)
         if not self.logistic_pars:
             return pred
         else:
