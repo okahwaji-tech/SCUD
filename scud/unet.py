@@ -195,6 +195,7 @@ class KingmaUNet(nn.Module):
         super().__init__()
 
         self.first_mult = first_mult
+        self.schedule_conditioning = schedule_conditioning
         if schedule_conditioning:
             in_channels = ch * n_channel + n_channel * s_dim
 
@@ -221,6 +222,36 @@ class KingmaUNet(nn.Module):
                         nn.SiLU(),
                         nn.Linear(s_embed_dim, ch * n_channel),
                     )
+
+                # Tau (holding-time) embedding: mirrors S but is additive.
+                # Zero-initialized last layer so tau=0 or tau=None recovers
+                # standard SCUD exactly.
+                self.tau_embed_sinusoid: nn.Module = lambda s: torch.cat(  # type: ignore[assignment]
+                    [
+                        torch.sin(s.reshape(*s.shape, 1) * 1000 * self.semb_sin / s_lengthscale),
+                        torch.cos(s.reshape(*s.shape, 1) * 1000 * self.semb_sin / s_lengthscale),
+                    ],
+                    dim=-1,
+                )
+                tau_nn = nn.Sequential(
+                    nn.Linear(n_channel * s_dim, s_embed_dim),
+                    nn.SiLU(),
+                    nn.Linear(s_embed_dim, s_embed_dim),
+                )
+                nn.init.zeros_(tau_nn[-1].weight)
+                nn.init.zeros_(tau_nn[-1].bias)
+                self.tau_embed_nn: nn.Module | None = tau_nn
+                if self.first_mult:
+                    tau_mult = nn.Sequential(
+                        nn.Linear(n_channel * s_dim, s_embed_dim),
+                        nn.SiLU(),
+                        nn.Linear(s_embed_dim, ch * n_channel),
+                    )
+                    nn.init.zeros_(tau_mult[-1].weight)
+                    nn.init.zeros_(tau_mult[-1].bias)
+                    self.tau_mult_nn: nn.Module | None = tau_mult
+                else:
+                    self.tau_mult_nn = None
             else:
                 s = torch.arange(MAX_EMBED_SIZE).reshape(-1, 1) * 1000 / s_lengthscale
                 semb = torch.cat([torch.sin(s * semb_sin), torch.cos(s * semb_sin)], dim=1)
@@ -229,11 +260,15 @@ class KingmaUNet(nn.Module):
                 self.S_embed_sinusoid = s_embed_module
                 s_embed_dim = 0
                 self.S_embed_nn: nn.Module = nn.Identity()  # type: ignore[no-redef]
+                self.tau_embed_nn = None
+                self.tau_mult_nn = None
             if semb_style != "u_inject":
                 s_embed_dim = 0
         else:
             s_embed_dim = 0
             in_channels = ch * n_channel
+            self.tau_embed_nn = None
+            self.tau_mult_nn = None
         self.N = N
         self.n_channel = n_channel
         out_channels = n_channel * N
@@ -351,6 +386,7 @@ class KingmaUNet(nn.Module):
         t: torch.Tensor,
         y: torch.Tensor | None = None,
         S: torch.Tensor | None = None,
+        tau: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass: embed inputs, run U-Net, reshape to per-pixel logits.
 
@@ -359,6 +395,12 @@ class KingmaUNet(nn.Module):
             t: Diffusion time, shape (B,).
             y: Optional class labels, shape (B,).
             S: Optional schedule tensor, shape (B, C, H, W).
+            tau: Optional holding-time tensor, shape (B, C, H, W).
+                 When provided (and schedule_conditioning is enabled),
+                 its embedding is added to the S embedding so the model
+                 knows how "stale" each token prediction is.  The last
+                 layer is zero-initialized, so tau=0 or tau=None recovers
+                 standard SCUD exactly.
 
         Returns:
             Per-pixel class logits, shape (B, C, H, W, N).
@@ -392,10 +434,22 @@ class KingmaUNet(nn.Module):
             semb_sin = self.S_embed_sinusoid(S.permute(0, 2, 3, 1))
             semb = self.S_embed_nn(semb_sin.reshape(*semb_sin.shape[:-2], -1)).permute(0, 3, 1, 2)
 
+            # Add tau (holding-time) embedding additively to semb.
+            # Zero-init last layer ensures tau=0 or tau=None recovers standard SCUD.
+            use_tau = (
+                tau is not None and self.schedule_conditioning and self.tau_embed_nn is not None
+            )
+            if use_tau:
+                tau_sin = self.tau_embed_sinusoid(tau.permute(0, 2, 3, 1))
+                tau_flat = tau_sin.reshape(*tau_sin.shape[:-2], -1)
+                semb = semb + self.tau_embed_nn(tau_flat).permute(0, 3, 1, 2)
+
             if self.first_mult:
                 s_mult = self.S_mult_nn(semb_sin.reshape(*semb_sin.shape[:-2], -1)).permute(
                     0, 3, 1, 2
                 )
+                if use_tau and self.tau_mult_nn is not None:
+                    s_mult = s_mult + self.tau_mult_nn(tau_flat).permute(0, 3, 1, 2)
                 x = x * s_mult
             x = torch.cat([x, semb], dim=1)
         else:
