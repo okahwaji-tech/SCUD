@@ -43,6 +43,23 @@ class ClassicalDiffusion(ContinuousTimeDiffusion):
     eigenvectors: torch.Tensor
     eigenvectors_inv: torch.Tensor
 
+    # Buffers pinned to CPU on MPS (lacks complex128/float64). On CUDA they move normally.
+    _CPU_PINNED_BUFFERS = frozenset({"L", "eigenvalues", "eigenvectors", "eigenvectors_inv"})
+
+    def _apply(self, fn, recurse=True):
+        """Pin math buffers to CPU only when target device is MPS."""
+        target = fn(torch.tensor(0.0)).device
+        if target.type == "mps":
+            saved = {}
+            for name in self._CPU_PINNED_BUFFERS:
+                if name in self._buffers:
+                    saved[name] = self._buffers.pop(name)
+            result = super()._apply(fn, recurse=recurse)
+            for name, buf in saved.items():
+                self._buffers[name] = buf
+            return result
+        return super()._apply(fn, recurse=recurse)
+
     def __init__(
         self,
         x0_model_class: type,
@@ -95,12 +112,14 @@ class ClassicalDiffusion(ContinuousTimeDiffusion):
         Returns:
             Result of matrix exponential applied to v, shape (B, ..., C).
         """
-        dv = v.to(dtype=self.eigenvectors.dtype).reshape(v.shape[0], -1, v.shape[-1])
-        diag = torch.exp(-self.log_alpha(t)[..., None] * self.eigenvalues)
+        orig_device = v.device
+        buf_dev = self.eigenvectors.device
+        dv = v.to(buf_dev).to(dtype=self.eigenvectors.dtype).reshape(v.shape[0], -1, v.shape[-1])
+        diag = torch.exp(-self.log_alpha(t.to(buf_dev))[..., None] * self.eigenvalues)
         dv = dv @ self.eigenvectors
         dv = dv * diag.unsqueeze(-2)
         dv = dv @ self.eigenvectors_inv
-        return F.relu(dv.double()).to(t.dtype).reshape(v.shape)  # negative values are errors
+        return F.relu(dv.double()).to(torch.float32).reshape(v.shape).to(orig_device)
 
     def get_trans_mats_index(self, t: torch.Tensor, ind: torch.Tensor) -> torch.Tensor:
         """Compute rows of exp(L * log_alpha(t)) indexed by ind.
@@ -112,17 +131,20 @@ class ClassicalDiffusion(ContinuousTimeDiffusion):
         Returns:
             Transition probabilities, shape (B, ..., C).
         """
-        dind = ind.reshape(ind.shape[0], -1)
-        diag = torch.exp(-self.log_alpha(t)[..., None] * self.eigenvalues)
+        orig_device = ind.device
+        buf_dev = self.eigenvectors.device
+        dind = ind.to(buf_dev).reshape(ind.shape[0], -1)
+        diag = torch.exp(-self.log_alpha(t.to(buf_dev))[..., None] * self.eigenvalues)
         dv = self.eigenvectors[dind, :]
         dv = dv * diag.unsqueeze(-2)
         dv = dv @ self.eigenvectors_inv
-        return F.relu(dv.double()).to(t.dtype).reshape(ind.shape + (self.num_classes,))
+        return F.relu(dv.double()).to(torch.float32).reshape(ind.shape + (self.num_classes,)).to(orig_device)
 
     def get_kl_t1(self, x: torch.Tensor) -> torch.Tensor:
         t = self.t_max * torch.ones(x.shape[0], device=x.device)
         x_1 = torch.log(self.get_trans_mats_index(t, x) + self.eps)
-        kl = kls(x_1, torch.log(self.get_stationary() + self.eps))
+        stationary = self.get_stationary().to(x_1.device)
+        kl = kls(x_1, torch.log(stationary + self.eps))
         return kl.mean()
 
     def x_t_sample(
@@ -145,7 +167,8 @@ class ClassicalDiffusion(ContinuousTimeDiffusion):
             err = torch.any(p_xt <= self.eps, dim=-1)
             logger.warning("Small p_xt: %s %s %s", t[err], p_xt[err], x_0[err])
         ratios = p_y / (p_xt[..., None] + self.eps)
-        bwd_inf_gen = ((ratios * self.L.T[x_t, :]).transpose(0, -1) * self.beta(t)).transpose(0, -1)
+        L_rows = self.L.T[x_t.to(self.L.device), :].to(x_t.device)
+        bwd_inf_gen = ((ratios * L_rows).transpose(0, -1) * self.beta(t)).transpose(0, -1)
         bwd_inf_gen.scatter_(-1, x_t.unsqueeze(-1), 0)  # set diag to 0
         return bwd_inf_gen
 

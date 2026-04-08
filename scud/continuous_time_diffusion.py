@@ -14,6 +14,7 @@ import logging
 from collections.abc import Callable
 
 import torch
+import torch.nn.functional as F
 
 from scud.mutual_info_schedule import get_a_b_func_mi
 
@@ -127,10 +128,17 @@ class ContinuousTimeDiffusion(DiffusionTrainer):
             bin_width = 2.0 / (self.num_classes - 1.0)
             bin_centers = torch.linspace(-1.0, 1.0, self.num_classes).to(pred.device)
             bin_centers = bin_centers - loc
-            log_cdf_min = torch.nn.LogSigmoid()(inv_scale * (bin_centers - 0.5 * bin_width))
-            log_cdf_max = torch.nn.LogSigmoid()(inv_scale * (bin_centers + 0.5 * bin_width))
-            logits = log_cdf_max + torch.log1p(-torch.exp(log_cdf_min - log_cdf_max) + self.eps)
-            result: torch.Tensor = logits
+            upper = inv_scale * (bin_centers + 0.5 * bin_width)
+            lower = inv_scale * (bin_centers - 0.5 * bin_width)
+            # Numerically stable log(sigmoid(upper) - sigmoid(lower)):
+            # = log(sigmoid(upper)) + log(1 - exp(log_sigmoid(lower) - log_sigmoid(upper)))
+            # Use softplus for gradient stability: log(sigmoid(x)) = -softplus(-x)
+            log_cdf_max = -F.softplus(-upper)
+            log_cdf_min = -F.softplus(-lower)
+            # Stable log-diff-exp: log(1 - exp(x)) for x < 0
+            diff = log_cdf_min - log_cdf_max  # always <= 0
+            logits = log_cdf_max + torch.log(-torch.expm1(diff).clamp(max=-self.eps))
+            result: torch.Tensor = logits.clamp(min=-70)
             return result
 
     def q_posterior_logits(

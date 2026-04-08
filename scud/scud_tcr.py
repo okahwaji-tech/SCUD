@@ -103,7 +103,8 @@ class SCUD_TCR(SCUD):
             s_low = S - k
 
             # Single forward K step: sample x̂ ~ K(· | x̂_0) for one transition
-            one_step_probs = self.K_powers[1, x0_hat, :]  # K^1[x0_hat, :] per position
+            kd = self.K_powers.device
+            one_step_probs = self.K_powers[1, x0_hat.to(kd), :].to(x0_hat.device)
             noise = torch.rand_like(one_step_probs).clamp(min=self.eps)
             gumbel_noise = 1.0 / (-torch.log(noise))
             x_unrolled = torch.argmax(one_step_probs * gumbel_noise, dim=-1)

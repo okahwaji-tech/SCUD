@@ -77,7 +77,10 @@ def get_img_dataloaders(
         _make_transform(data_name, n_levels, train=False),
     )
 
-    num_workers = 16 // max(1, torch.cuda.device_count())
+    if torch.cuda.is_available():
+        num_workers = 16 // max(1, torch.cuda.device_count())
+    else:
+        num_workers = 0  # MPS/CPU: avoid pickle issues with spawn
 
     def collate(batch: list[dict[str, Any]]) -> torch.Tensor:
         return _collate_fn(batch, col)
@@ -88,7 +91,7 @@ def get_img_dataloaders(
         shuffle=True,
         num_workers=num_workers,
         collate_fn=collate,
-        pin_memory=True,
+        pin_memory=torch.cuda.is_available(),
     )
     test_dataloader = DataLoader(
         test_ds,  # type: ignore[arg-type]
@@ -96,7 +99,7 @@ def get_img_dataloaders(
         shuffle=False,
         num_workers=num_workers,
         collate_fn=collate,
-        pin_memory=True,
+        pin_memory=torch.cuda.is_available(),
     )
 
     return train_dataloader, test_dataloader

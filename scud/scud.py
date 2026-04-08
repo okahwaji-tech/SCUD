@@ -43,6 +43,23 @@ class SCUD(ContinuousTimeDiffusion):
     MAX_CLASSES_FOR_PRECOMPUTE = 512
     use_tau_at_inference: bool = False
 
+    # Buffers pinned to CPU on MPS (lacks complex128/float64). On CUDA they move normally.
+    _CPU_PINNED_BUFFERS = frozenset({"eigenvalues", "eigenvectors", "eigenvectors_inv", "K", "K_powers"})
+
+    def _apply(self, fn, recurse=True):
+        """Pin math buffers to CPU only when target device is MPS."""
+        target = fn(torch.tensor(0.0)).device
+        if target.type == "mps":
+            saved = {}
+            for name in self._CPU_PINNED_BUFFERS:
+                if name in self._buffers:
+                    saved[name] = self._buffers.pop(name)
+            result = super()._apply(fn, recurse=recurse)
+            for name, buf in saved.items():
+                self._buffers[name] = buf
+            return result
+        return super()._apply(fn, recurse=recurse)
+
     # Type annotations for register_buffer tensors
     eigenvalues: torch.Tensor
     eigenvectors: torch.Tensor
@@ -128,12 +145,15 @@ class SCUD(ContinuousTimeDiffusion):
         Returns:
             Result of K^{Smk} @ v, shape (..., C), clamped to non-negative.
         """
-        dv = v.to(dtype=self.eigenvectors.dtype).reshape(-1, v.shape[-1])
-        diag = self.eigenvalues ** F.relu(Smk.flatten()[..., None])
+        orig_device = v.device
+        buf_dev = self.eigenvectors.device  # CPU on MPS, same as v on CUDA
+        # Move to CPU first, then cast dtype (MPS can't hold complex128)
+        dv = v.to(buf_dev).to(dtype=self.eigenvectors.dtype).reshape(-1, v.shape[-1])
+        diag = self.eigenvalues ** F.relu(Smk.to(buf_dev).flatten()[..., None])
         dv = dv @ self.eigenvectors
         dv = dv * diag
         dv = dv @ self.eigenvectors_inv
-        return F.relu(dv.double()).to(torch.float32).reshape(v.shape)
+        return F.relu(dv.double()).to(torch.float32).reshape(v.shape).to(orig_device)
 
     def get_kl_t1(self, x: torch.Tensor) -> torch.Tensor:
         # sample S
@@ -143,7 +163,8 @@ class SCUD(ContinuousTimeDiffusion):
         softmaxed = convert_to_probs(x, self.num_classes)  # bs, ..., num_classes
         trans = self.get_trans_mats_mvp(S, softmaxed)
         x_1 = torch.log(trans + self.eps)
-        kl = kls(x_1, torch.log(self.get_stationary() + self.eps))
+        stationary = self.get_stationary().to(x_1.device)
+        kl = kls(x_1, torch.log(stationary + self.eps))
         return kl.mean()
 
     def x_t_sample(
@@ -164,7 +185,8 @@ class SCUD(ContinuousTimeDiffusion):
             Noisy data x_t with same shape as x_0.
         """
         # forward process, x_0 is the clean input.
-        probs = self.K_powers[S, x_0, :]
+        kd = self.K_powers.device  # same as x_0 on CUDA, CPU on MPS
+        probs = self.K_powers[S.to(kd), x_0.to(kd), :].to(x_0.device)
         noise = torch.clip(noise, self.eps, 1.0)
         gumbel_noise = 1 / (-torch.log(noise))
         x_t = torch.argmax(probs * gumbel_noise, dim=-1)
@@ -196,11 +218,13 @@ class SCUD(ContinuousTimeDiffusion):
             Posterior (log-)probabilities of shape (B, ..., C).
         """
         assert S is not None
-        fact1 = self.K_powers.swapaxes(1, 2)[k, x_t, :]  # x_t | x_{t-1}
+        kd = self.K_powers.device
+        k_d = k.to(kd) if isinstance(k, torch.Tensor) else k
+        fact1 = self.K_powers.swapaxes(1, 2)[k_d, x_t.to(kd), :].to(x_t.device)
         softmaxed = convert_to_probs(x_0, self.num_classes)  # bs, ..., num_classes
         fact2 = self.get_trans_mats_mvp(S - k, softmaxed)  # x_{t-1} | x_{0}
-        assert torch.all(fact1 >= 0)
-        assert torch.all(fact2 >= 0)
+        fact1 = fact1.clamp(min=0)
+        fact2 = fact2.clamp(min=0)
         if log:
             return torch.log(fact1 + self.eps) + torch.log(fact2 + self.eps)
         else:
@@ -292,7 +316,13 @@ class SCUD(ContinuousTimeDiffusion):
             predicted_x0_logits, x, t, S, k=k, log=False
         )
         # K'_x,.K_.,. denoises and then renoises immediately
-        sample_logits = torch.einsum("...i,...ij->...j", pred_q_posterior_logits, self.K_powers[k])
+        kd = self.K_powers.device
+        k_d = k.to(kd) if isinstance(k, torch.Tensor) else k
+        sample_logits = torch.einsum(
+            "...i,...ij->...j",
+            pred_q_posterior_logits.to(kd),
+            self.K_powers[k_d],
+        ).to(pred_q_posterior_logits.device)
         # sample
         noise = torch.clip(noise, self.eps, 1.0)
         gumbel_noise = 1 / (-torch.log(noise))

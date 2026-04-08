@@ -74,5 +74,8 @@ def sample_n_transitions_cont(
     """
     times = times.reshape(-1)
     log_alpha_t = log_alpha(times).reshape(1, -1).repeat(batch_size, 1)
-    transitions = torch.poisson(-log_alpha_t)
+    if log_alpha_t.device.type == "mps":
+        transitions = torch.poisson(-log_alpha_t.cpu()).to(log_alpha_t.device)
+    else:
+        transitions = torch.poisson(-log_alpha_t)
     return transitions

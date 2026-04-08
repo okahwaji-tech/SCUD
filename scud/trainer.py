@@ -204,10 +204,14 @@ class DiffusionTrainer(pl.LightningModule):
         for _i, batch in tqdm(enumerate(dataloader)):  # type: ignore[arg-type]
             if p0.sum() > self.n_stat_samples:
                 break
-            if isinstance(batch, tuple):  # image datasets
+            if isinstance(batch, torch.Tensor):  # image datasets (collated tensor)
+                x = batch
+            elif isinstance(batch, tuple):  # protein datasets
                 x, _ = batch
             elif isinstance(batch, dict):  # text datasets
                 x = batch["input_ids"]
+            else:
+                raise TypeError(f"Unexpected batch type: {type(batch)}")
             new = (
                 F.one_hot(x.long(), num_classes=num_classes)
                 .to(torch.float32)

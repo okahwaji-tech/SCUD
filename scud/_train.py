@@ -8,7 +8,6 @@ import certifi
 import lightning.pytorch as pl
 import torch
 import wandb
-from evodiff.utils import Tokenizer
 from lightning.pytorch import Trainer
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
@@ -31,6 +30,9 @@ logger = logging.getLogger(__name__)
 
 def run_training(cfg: DictConfig) -> None:
     """Run the full training pipeline for SCUD/Masking/Classical diffusion models."""
+    # Enable CPU fallback for MPS-unsupported ops (torch.poisson, etc.)
+    if not torch.cuda.is_available() and torch.backends.mps.is_available():
+        os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
     @rank_zero_only
     def init_wandb() -> None:
@@ -73,7 +75,7 @@ def run_training(cfg: DictConfig) -> None:
             gen_trans_step=cfg.sampling.gen_trans_step,
             t_max=cfg.model.t_max,
             seed=cfg.model.seed,
-            tokenizer=tokenizer if cfg.data.data != "uniref50" else Tokenizer(),
+            tokenizer=tokenizer if cfg.data.data != "uniref50" else __import__("evodiff.utils", fromlist=["Tokenizer"]).Tokenizer(),
             **OmegaConf.to_container(cfg.train, resolve=True),  # type: ignore[arg-type]
         )
         ckpt_path = None
@@ -92,7 +94,8 @@ def run_training(cfg: DictConfig) -> None:
 
     @rank_zero_only
     def update_wandb_config():
-        wandb.config.update(lightning_model.hparams)
+        if wandb.run is not None:
+            wandb.config.update(lightning_model.hparams)
 
     update_wandb_config()
 
@@ -102,10 +105,10 @@ def run_training(cfg: DictConfig) -> None:
         val_check_interval = 1.0
     trainer = Trainer(
         max_epochs=cfg.train.n_epoch,
-        accelerator="auto",
-        devices="auto",
+        accelerator=cfg.train.get("accelerator", "auto"),
+        devices=cfg.train.get("devices", "auto"),
         logger=wandb_logger,
-        strategy=DDPStrategy(broadcast_buffers=True),
+        strategy=DDPStrategy(broadcast_buffers=True) if torch.cuda.is_available() else "auto",
         callbacks=(
             [EMA(0.9999)] * cfg.train.ema
             + [

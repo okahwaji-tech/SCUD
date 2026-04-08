@@ -358,7 +358,7 @@ class KingmaUNet(nn.Module):
         self.norm_out = NormalizationLayer(ch)
         self.conv_out = nn.Conv2d(ch, out_channels, 3, padding=1)
 
-    @torch.compile()
+    @torch.compile(disable=not torch.cuda.is_available())
     def flat_unet(self, x, temb, yemb, semb):
         # Downsampling
         h = self.conv_in(x)

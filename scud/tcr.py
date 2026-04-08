@@ -33,12 +33,15 @@ def _eigenvector_mvp(
         Result of v @ K^S, shape (..., C), clamped to non-negative.
     """
     assert torch.all(S >= 0), f"Negative exponents in _eigenvector_mvp: min={S.min().item()}"
-    dv = v.to(dtype=eigenvectors.dtype).reshape(-1, v.shape[-1])
-    diag = eigenvalues ** F.relu(S.flatten()[..., None])
+    orig_device = v.device
+    buf_dev = eigenvectors.device  # CPU on MPS, same as v on CUDA
+    # Move to buf_dev first, then cast dtype (MPS can't hold complex128)
+    dv = v.to(buf_dev).to(dtype=eigenvectors.dtype).reshape(-1, v.shape[-1])
+    diag = eigenvalues ** F.relu(S.to(buf_dev).flatten()[..., None])
     dv = dv @ eigenvectors
     dv = dv * diag
     dv = dv @ eigenvectors_inv
-    return F.relu(dv.double()).to(torch.float32).reshape(v.shape)
+    return F.relu(dv.double()).to(torch.float32).reshape(v.shape).to(orig_device)
 
 
 def detached_predict(
@@ -110,8 +113,8 @@ def scud_backward_transition(
             f"Max k: {k.max().item()}"
         )
 
-    # Likelihood: K^k[x_t, :]
-    fact1 = K_powers.swapaxes(1, 2)[k, x_t, :]
+    kd = K_powers.device  # same as x_t on CUDA, CPU on MPS
+    fact1 = K_powers.swapaxes(1, 2)[k.to(kd), x_t.to(kd), :].to(x_t.device)
 
     # Prior: K^{S-k} @ one_hot(x0_hat)
     x0_probs = F.one_hot(x0_hat.long(), num_classes).float()
