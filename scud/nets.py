@@ -37,6 +37,7 @@ def get_model_setup(
     """
     schedule_conditioning = cfg.model.model in [
         "SCUD",
+        "SCUD_TCR",
         "ScheduleCondition",
         "DiscreteScheduleCondition",
         "MaskingDiffusion",

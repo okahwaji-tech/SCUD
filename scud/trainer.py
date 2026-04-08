@@ -231,6 +231,8 @@ class DiffusionTrainer(pl.LightningModule):
 
         self.log("train_loss", info["vb_loss"], sync_dist=True)
         self.log("train_ce_loss", info["ce_loss"], sync_dist=True)
+        if "ce_loss_tcr" in info:
+            self.log("train_ce_loss_tcr", info["ce_loss_tcr"], sync_dist=True)
         result: torch.Tensor = loss
         return result
 

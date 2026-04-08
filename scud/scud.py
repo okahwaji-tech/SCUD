@@ -261,9 +261,10 @@ class SCUD(ContinuousTimeDiffusion):
         S: torch.Tensor | None = None,
         k: int | torch.Tensor = 1,
         temperature: float = 1,
+        tau: torch.Tensor | None = None,
     ) -> torch.Tensor:
         # predict prev(x_t) or x_{t-1}
-        predicted_x0_logits = self.model_predict(x, t, attn_mask, S) / temperature
+        predicted_x0_logits = self.model_predict(x, t, attn_mask, S, tau=tau) / temperature
         pred_q_posterior_logits = self.q_posterior_logits(
             predicted_x0_logits, x, t, S, k=k, log=False
         )
@@ -282,9 +283,10 @@ class SCUD(ContinuousTimeDiffusion):
         S: torch.Tensor | None = None,
         k: int | torch.Tensor = 1,
         temperature: float = 1,
+        tau: torch.Tensor | None = None,
     ) -> torch.Tensor:
         # predict prev(x_t) or x_{t-1}
-        predicted_x0_logits = self.model_predict(x, t, attn_mask, S) / temperature
+        predicted_x0_logits = self.model_predict(x, t, attn_mask, S, tau=tau) / temperature
         pred_q_posterior_logits = self.q_posterior_logits(
             predicted_x0_logits, x, t, S, k=k, log=False
         )
@@ -353,8 +355,16 @@ class SCUD(ContinuousTimeDiffusion):
         trans_corrector_k,
         stride,
         images,
+        use_tau=False,
     ):
         """Run the denoising loop, iterating through steps and calling p_sample/corrector_sample."""
+        # Initialize tau tracking
+        if use_tau:
+            g = S.clone()  # no predictions yet; init to S so tau starts at 0
+            tau = torch.zeros_like(S)
+        else:
+            tau = None
+
         steps = 0
         n_steps = torch.tensor([S[b].sum() for b in range(len(S))]).max().item()
         pbar = tqdm(total=n_steps, unit="iteration", position=0, leave=True)
@@ -372,9 +382,21 @@ class SCUD(ContinuousTimeDiffusion):
                 S,
                 k=k,
                 temperature=temperature,
+                tau=tau,
             )
+
+            # Update holding-time state
+            if use_tau:
+                wrote_mask = k > 0
+                g = torch.where(wrote_mask, S, g)
+
             assert torch.all(S_temp <= S)
             S = S_temp
+
+            if use_tau:
+                tau = g - S
+
+            # Corrector steps don't update g/tau
             for _l in range(n_corrector_steps):
                 x = self.corrector_sample(
                     x,
@@ -384,6 +406,7 @@ class SCUD(ContinuousTimeDiffusion):
                     S,
                     k=torch.minimum(S, torch.tensor(trans_corrector_k)),
                     temperature=temperature,
+                    tau=tau,
                 )
             pbar.update(trans_step)
             steps += 1
@@ -448,5 +471,6 @@ class SCUD(ContinuousTimeDiffusion):
             trans_corrector_k,
             stride,
             images,
+            use_tau=use_tau,
         )
         return result

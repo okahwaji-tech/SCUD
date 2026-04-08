@@ -9,6 +9,7 @@ Paper: "Why Masking Diffusion Works" (NeurIPS 2025)
 from scud.classical_diffusion import ClassicalDiffusion
 from scud.masking_diffusion import MaskingDiffusion
 from scud.scud import SCUD
+from scud.scud_tcr import SCUD_TCR
 
 __version__ = "0.1.0"
-__all__ = ["SCUD", "MaskingDiffusion", "ClassicalDiffusion"]
+__all__ = ["SCUD", "SCUD_TCR", "MaskingDiffusion", "ClassicalDiffusion"]

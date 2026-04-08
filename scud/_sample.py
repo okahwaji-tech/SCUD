@@ -14,9 +14,11 @@ from torchvision.utils import save_image
 from scud.classical_diffusion import ClassicalDiffusion
 from scud.masking_diffusion import MaskingDiffusion
 from scud.scud import SCUD
+from scud.scud_tcr import SCUD_TCR
 
 MODEL_CLASS_MAP: dict[str, type] = {
     "SCUD": SCUD,
+    "SCUD_TCR": SCUD_TCR,
     "Masking": MaskingDiffusion,
     "Classical": ClassicalDiffusion,
 }
