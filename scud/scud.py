@@ -387,10 +387,9 @@ class SCUD(ContinuousTimeDiffusion):
                 tau=tau,
             )
 
-            # Paper Algorithm 2: tau increments where token unchanged, resets where changed
+            # Binary tau matching training: 1 where token survived, 0 where changed
             if use_tau:
-                survived = x == x_old
-                tau = torch.where(survived, tau + 1, torch.zeros_like(tau))
+                tau = (x == x_old).long()
 
             assert torch.all(S_temp <= S)
             S = S_temp
@@ -409,8 +408,7 @@ class SCUD(ContinuousTimeDiffusion):
                     tau=tau,
                 )
                 if use_tau:
-                    survived_corr = x == x_old_corr
-                    tau = torch.where(survived_corr, tau + 1, torch.zeros_like(tau))
+                    tau = (x == x_old_corr).long()
             pbar.update(trans_step)
             steps += 1
             if steps % stride == 0:

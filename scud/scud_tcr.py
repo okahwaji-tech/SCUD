@@ -102,13 +102,11 @@ class SCUD_TCR(SCUD):
             k = (S > 0).long()
             s_low = S - k
 
-            # Re-noise x0_hat via forward kernel K^{S-1} (NOT via backward transition)
-            x_unrolled = self.x_t_sample(
-                x0_hat,
-                t,
-                torch.rand((*x0_hat.shape, self.num_classes), device=x0_hat.device),
-                s_low,
-            )
+            # Single forward K step: sample x̂ ~ K(· | x̂_0) for one transition
+            one_step_probs = self.K_powers[1, x0_hat, :]  # K^1[x0_hat, :] per position
+            noise = torch.rand_like(one_step_probs).clamp(min=self.eps)
+            gumbel_noise = 1.0 / (-torch.log(noise))
+            x_unrolled = torch.argmax(one_step_probs * gumbel_noise, dim=-1)
 
             # Binary tau: 1 where token survived, 0 where corrupted (or S was 0)
             tau_binary = ((x_unrolled == x0_hat) & (S > 0)).long()
