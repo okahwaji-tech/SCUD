@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import PropertyMock, patch
+
 import pytest
 
 pl = pytest.importorskip("lightning.pytorch")
@@ -157,3 +159,103 @@ class TestSCUDTCRForward:
         assert "vb_loss" in info
         assert "ce_loss" in info
         assert "ce_loss_tcr" in info
+        assert "tcr_lambda" in info
+
+    def test_path_b_skipped_in_eval(self, tiny_scud_tcr_model: SCUD_TCR) -> None:
+        model = tiny_scud_tcr_model
+        model.eval()
+        x = torch.randint(0, 4, (2, 3, 8, 8))
+        with torch.no_grad():
+            _, info = model(x)
+        assert info["ce_loss_tcr"] == 0.0
+        assert info["tcr_lambda"] == 0.0
+
+    def test_path_b_runs_in_train_with_nonzero_lambda(self) -> None:
+        num_classes = 4
+        nn_params = {
+            "n_channel": 3,
+            "N": num_classes,
+            "n_T": 10,
+            "schedule_conditioning": True,
+            "s_dim": 8,
+            "width": 8,
+            "ch": 8,
+            "s_lengthscale": 50,
+            "time_lengthscale": 1,
+            "n_layers": 1,
+            "time_embed_dim": 0,
+            "not_logistic_pars": True,
+            "semb_style": "u_inject",
+            "s_embed_dim": 16,
+            "film": False,
+            "input_logits": False,
+            "first_mult": False,
+        }
+        model = SCUD_TCR(
+            x0_model_class=KingmaUNet,
+            nn_params=nn_params,
+            num_classes=num_classes,
+            forward_kwargs={"type": "uniform"},
+            schedule_type="cos",
+            gamma=0,
+            logistic_pars=False,
+            tcr_warmup_epochs=1,
+            tcr_lambda_max=0.5,
+        )
+        model.p0 = torch.ones(num_classes) / num_classes
+        model.log_alpha, model.beta = model.get_beta_func(
+            model.K.cpu(), model.p0.cpu(), type_="schedule_condition", scale=model.rate.cpu()
+        )
+        # Simulate epoch 1 (past warmup of 1 epoch) so lambda > 0
+        model.train()
+        x = torch.randint(0, 4, (2, 3, 8, 8))
+        with patch.object(type(model), "current_epoch", new_callable=PropertyMock, return_value=1):
+            loss, info = model(x)
+        assert info["tcr_lambda"] == 0.5
+        assert info["ce_loss_tcr"] > 0.0
+
+    def test_curriculum_lambda_warmup(self) -> None:
+        num_classes = 4
+        nn_params = {
+            "n_channel": 3,
+            "N": num_classes,
+            "n_T": 10,
+            "schedule_conditioning": True,
+            "s_dim": 8,
+            "width": 8,
+            "ch": 8,
+            "s_lengthscale": 50,
+            "time_lengthscale": 1,
+            "n_layers": 1,
+            "time_embed_dim": 0,
+            "not_logistic_pars": True,
+            "semb_style": "u_inject",
+            "s_embed_dim": 16,
+            "film": False,
+            "input_logits": False,
+            "first_mult": False,
+        }
+        model = SCUD_TCR(
+            x0_model_class=KingmaUNet,
+            nn_params=nn_params,
+            num_classes=num_classes,
+            forward_kwargs={"type": "uniform"},
+            schedule_type="cos",
+            gamma=0,
+            logistic_pars=False,
+            tcr_warmup_epochs=4,
+            tcr_lambda_max=0.8,
+        )
+        # Epoch 0: lambda should be 0
+        with patch.object(type(model), "current_epoch", new_callable=PropertyMock, return_value=0):
+            assert model._get_tcr_lambda() == 0.0
+        # Epoch 2: lambda should be 0.5 * 0.8 = 0.4
+        with patch.object(type(model), "current_epoch", new_callable=PropertyMock, return_value=2):
+            assert abs(model._get_tcr_lambda() - 0.4) < 1e-9
+        # Epoch 4+: lambda should be 0.8
+        with patch.object(type(model), "current_epoch", new_callable=PropertyMock, return_value=4):
+            assert abs(model._get_tcr_lambda() - 0.8) < 1e-9
+        with patch.object(
+            type(model), "current_epoch", new_callable=PropertyMock, return_value=10
+        ):
+            assert abs(model._get_tcr_lambda() - 0.8) < 1e-9
