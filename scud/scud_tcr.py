@@ -18,7 +18,7 @@ import torch
 import torch.nn.functional as F
 
 from .scud import SCUD
-from .tcr import detached_predict, scud_backward_transition
+from .tcr import detached_predict
 from .utils import kls
 
 
@@ -46,6 +46,7 @@ class SCUD_TCR(SCUD):
         super().__init__(*args, **kwargs)
         self.tcr_warmup_epochs = tcr_warmup_epochs
         self.tcr_lambda_max = tcr_lambda_max
+        self.save_hyperparameters("tcr_warmup_epochs", "tcr_lambda_max")
 
     def _get_tcr_lambda(self) -> float:
         """Compute curriculum mixing weight for the current epoch.
@@ -94,29 +95,37 @@ class SCUD_TCR(SCUD):
         if self.training and lam > 0:
             x0_hat, _ = detached_predict(self, x_t, t, attn_mask, S, tau=tau_zero)
 
-            # Single-step backward: k=1 where S>0, k=0 where S=0
-            k = torch.where(S > 0, torch.ones_like(S), torch.zeros_like(S))
+            # Mask for positions where unrolling is valid (S > 0)
+            valid_mask = (S > 0).float()
+
+            # Only set k=1 where S > 0
+            k = (S > 0).long()
             s_low = S - k
 
-            x_unrolled = scud_backward_transition(
-                x_t,
+            # Re-noise x0_hat via forward kernel K^{S-1} (NOT via backward transition)
+            x_unrolled = self.x_t_sample(
                 x0_hat,
-                self.K_powers,
-                S,
-                k,
-                self.num_classes,
-                self.eigenvectors,
-                self.eigenvalues,
-                self.eigenvectors_inv,
+                t,
+                torch.rand((*x0_hat.shape, self.num_classes), device=x0_hat.device),
+                s_low,
             )
 
-            # Binary tau: 1 where token survived corruption, 0 where it changed
-            tau_binary = (x_unrolled == x0_hat).long()
+            # Binary tau: 1 where token survived, 0 where corrupted (or S was 0)
+            tau_binary = ((x_unrolled == x0_hat) & (S > 0)).long()
 
             predicted_x0_logits_B = self.model_predict(
                 x_unrolled, t, attn_mask, s_low, tau=tau_binary
             ).to(torch.float32)
-            ce_unroll = self._compute_ce(predicted_x0_logits_B, x, attn_mask)
+
+            # Masked CE: only count positions where S > 0
+            flat_logits = predicted_x0_logits_B.flatten(start_dim=0, end_dim=-2)
+            flat_targets = x.flatten(start_dim=0, end_dim=-1)
+            flat_valid = valid_mask.flatten()
+            ce_per_elem = F.cross_entropy(flat_logits, flat_targets, reduction="none")
+            if attn_mask is not None:
+                flat_valid = flat_valid * attn_mask.flatten()
+            valid_count = flat_valid.sum().clamp(min=1)
+            ce_unroll = (ce_per_elem * flat_valid).sum() / valid_count
 
             loss = (1 - lam) * ce_base + lam * ce_unroll
             ce_unroll_val = ce_unroll.detach().item()
