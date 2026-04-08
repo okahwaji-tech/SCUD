@@ -9,9 +9,15 @@ import pytest
 pl = pytest.importorskip("lightning.pytorch")
 
 import torch  # noqa: E402
+import torch.nn.functional as F  # noqa: E402
 
 from scud.scud_tcr import SCUD_TCR  # noqa: E402
-from scud.tcr import detached_predict, sample_k, scud_backward_transition  # noqa: E402
+from scud.tcr import (  # noqa: E402
+    _eigenvector_mvp,
+    detached_predict,
+    sample_k,
+    scud_backward_transition,
+)
 from scud.unet import KingmaUNet  # noqa: E402
 
 
@@ -97,6 +103,77 @@ class TestTCRUtilities:
             model.eigenvectors_inv,
         )
         assert x_prev.shape == x_t.shape
+
+
+class TestNumericalCorrectness:
+    """Numerical correctness tests comparing TCR utilities against SCUD model methods."""
+
+    def test_eigenvector_mvp_matches_scud(self, tiny_scud_tcr_model: SCUD_TCR) -> None:
+        """Verify _eigenvector_mvp gives the same result as SCUD.get_trans_mats_mvp."""
+        model = tiny_scud_tcr_model
+        torch.manual_seed(42)
+
+        # Create test inputs: random S values and probability vectors
+        shape = (2, 3, 4, 4)
+        S = torch.randint(0, 8, shape)
+        probs = torch.rand(*shape, model.num_classes)
+        probs = probs / probs.sum(dim=-1, keepdim=True)
+
+        # Compute via standalone function
+        result_fn = _eigenvector_mvp(
+            S, probs, model.eigenvectors, model.eigenvalues, model.eigenvectors_inv
+        )
+
+        # Compute via SCUD model method
+        result_model = model.get_trans_mats_mvp(S, probs)
+
+        assert torch.allclose(result_fn, result_model, atol=1e-5), (
+            f"Max diff: {(result_fn - result_model).abs().max().item()}"
+        )
+
+    def test_backward_transition_matches_q_posterior(
+        self, tiny_scud_tcr_model: SCUD_TCR
+    ) -> None:
+        """Verify scud_backward_transition posterior matches SCUD.q_posterior_logits."""
+        model = tiny_scud_tcr_model
+        torch.manual_seed(42)
+
+        # Generate a sample point from the model
+        x = torch.randint(0, model.num_classes, (2, 3, 8, 8))
+        t, S, x_t = model.sample_point(x)
+
+        # Both methods use k=1.  q_posterior_logits uses scalar k=1 and
+        # relies on F.relu to clamp S-k when S==0, so the comparison is
+        # only valid where S >= 1 (the normal operating regime).
+        mask = S >= 1  # positions where k=1 is meaningful
+
+        # --- TCR backward transition computes: fact1 * fact2 ---
+        # fact1 = K_powers^T[1, x_t, :]  (scalar k=1 to match q_posterior_logits)
+        fact1_tcr = model.K_powers.swapaxes(1, 2)[1, x_t, :]
+        # fact2 = eigenvector_mvp(S - 1, one_hot(x0))
+        x0_probs = torch.nn.functional.one_hot(x.long(), model.num_classes).float()
+        fact2_tcr = _eigenvector_mvp(
+            F.relu(S - 1),
+            x0_probs,
+            model.eigenvectors,
+            model.eigenvalues,
+            model.eigenvectors_inv,
+        )
+        probs_tcr = (fact1_tcr * fact2_tcr).clamp(min=0.0)
+        probs_tcr = probs_tcr / (probs_tcr.sum(dim=-1, keepdim=True) + 1e-9)
+
+        # --- SCUD q_posterior_logits with log=False ---
+        posterior_scud = model.q_posterior_logits(x, x_t, t, S, k=1, log=False)
+        probs_scud = posterior_scud.clamp(min=0.0)
+        probs_scud = probs_scud / (probs_scud.sum(dim=-1, keepdim=True) + 1e-9)
+
+        # Compare only where S >= 1 (both methods agree on k=1 semantics)
+        assert mask.any(), "Need at least some positions with S >= 1"
+        probs_tcr_masked = probs_tcr[mask]
+        probs_scud_masked = probs_scud[mask]
+        assert torch.allclose(probs_tcr_masked, probs_scud_masked, atol=1e-5), (
+            f"Max diff: {(probs_tcr_masked - probs_scud_masked).abs().max().item()}"
+        )
 
 
 class TestTauEmbedding:

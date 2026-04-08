@@ -32,6 +32,7 @@ def _eigenvector_mvp(
     Returns:
         Result of v @ K^S, shape (..., C), clamped to non-negative.
     """
+    assert torch.all(S >= 0), f"Negative exponents in _eigenvector_mvp: min={S.min().item()}"
     dv = v.to(dtype=eigenvectors.dtype).reshape(-1, v.shape[-1])
     diag = eigenvalues ** F.relu(S.flatten()[..., None])
     dv = dv @ eigenvectors
@@ -101,6 +102,14 @@ def scud_backward_transition(
     Returns:
         Sampled intermediate tokens x_{t-k}, shape (B, ...).
     """
+    # Bounds check: k must be within precomputed K_powers range
+    max_k_power = K_powers.shape[0]
+    if torch.any(k >= max_k_power):
+        raise ValueError(
+            f"k contains values >= MAX_K_POWERS ({max_k_power}). "
+            f"Max k: {k.max().item()}"
+        )
+
     # Likelihood: K^k[x_t, :]
     fact1 = K_powers.swapaxes(1, 2)[k, x_t, :]
 
