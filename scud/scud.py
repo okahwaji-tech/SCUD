@@ -358,9 +358,8 @@ class SCUD(ContinuousTimeDiffusion):
         use_tau=False,
     ):
         """Run the denoising loop, iterating through steps and calling p_sample/corrector_sample."""
-        # Initialize tau tracking
+        # Initialize tau tracking (Paper Algorithm 2: value-comparison based)
         if use_tau:
-            g = S.clone()  # no predictions yet; init to S so tau starts at 0
             tau = torch.zeros_like(S)
         else:
             tau = None
@@ -372,6 +371,8 @@ class SCUD(ContinuousTimeDiffusion):
             k = ks[:, steps, :].reshape(S.shape)
             S_temp = S - k
             assert torch.all(S_temp >= 0)
+
+            x_old = x.clone() if use_tau else None
 
             # predict what comes next
             x = self.p_sample(
@@ -385,19 +386,17 @@ class SCUD(ContinuousTimeDiffusion):
                 tau=tau,
             )
 
-            # Update holding-time state
+            # Paper Algorithm 2: tau increments where token unchanged, resets where changed
             if use_tau:
-                wrote_mask = k > 0
-                g = torch.where(wrote_mask, S, g)
+                survived = x == x_old
+                tau = torch.where(survived, tau + 1, torch.zeros_like(tau))
 
             assert torch.all(S_temp <= S)
             S = S_temp
 
-            if use_tau:
-                tau = g - S
-
-            # Corrector steps don't update g/tau
+            # Corrector steps also update tau (they change token values)
             for _l in range(n_corrector_steps):
+                x_old_corr = x.clone() if use_tau else None
                 x = self.corrector_sample(
                     x,
                     t,
@@ -408,6 +407,9 @@ class SCUD(ContinuousTimeDiffusion):
                     temperature=temperature,
                     tau=tau,
                 )
+                if use_tau:
+                    survived_corr = x == x_old_corr
+                    tau = torch.where(survived_corr, tau + 1, torch.zeros_like(tau))
             pbar.update(trans_step)
             steps += 1
             if steps % stride == 0:
