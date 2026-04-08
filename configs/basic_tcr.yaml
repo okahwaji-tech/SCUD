@@ -34,14 +34,14 @@ architecture:
     width: 32
 
 train:
-    batch_size: 16
+    batch_size: 64
     n_epoch: 14
     lr: 0.0002
     grad_clip_val: 1
     weight_decay: 0
     accumulate: 1
     ema: false
-    precision: "32-true"
+    precision: "bf16-mixed"
     accelerator: auto
     devices: auto
 

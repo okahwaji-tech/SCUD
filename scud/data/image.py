@@ -29,31 +29,34 @@ image_data_name_dict: dict[str, str] = {
 }
 
 
-def _make_transform(
-    data_name: str,
-    n_levels: int,
-    train: bool,
-) -> Any:
-    """Return a transform function for ``Dataset.with_transform``."""
-    col = IMG_COLUMN[data_name]
+class _ImageTransform:
+    """Picklable transform for ``Dataset.with_transform`` (supports multiprocess workers)."""
 
-    def transform_fn(batch: dict[str, list[Any]]) -> dict[str, list[torch.Tensor]]:
+    def __init__(self, col: str, n_levels: int, train: bool) -> None:
+        self.col = col
+        self.n_levels = n_levels
+        self.train = train
+
+    def __call__(self, batch: dict[str, list[Any]]) -> dict[str, list[torch.Tensor]]:
         tensors: list[torch.Tensor] = []
-        for img in batch[col]:
+        for img in batch[self.col]:
             x = TF.to_tensor(img)
-            if train:
+            if self.train:
                 x = TF.hflip(x) if torch.rand(1).item() < 0.5 else x
-            x = (x * (n_levels - 1)).round().long().clamp(0, n_levels - 1)
+            x = (x * (self.n_levels - 1)).round().long().clamp(0, self.n_levels - 1)
             tensors.append(x)
-        batch[col] = tensors
+        batch[self.col] = tensors
         return batch
 
-    return transform_fn
 
+class _CollateFn:
+    """Picklable collate function for multiprocess DataLoader workers."""
 
-def _collate_fn(batch: list[dict[str, Any]], col: str) -> torch.Tensor:
-    """Stack image tensors into ``(B, C, H, W)`` int64 tensor."""
-    return torch.stack([item[col] for item in batch])
+    def __init__(self, col: str) -> None:
+        self.col = col
+
+    def __call__(self, batch: list[dict[str, Any]]) -> torch.Tensor:
+        return torch.stack([item[self.col] for item in batch])
 
 
 def get_img_dataloaders(
@@ -71,19 +74,20 @@ def get_img_dataloaders(
     ds = load_dataset(hf_id)
 
     train_ds = ds["train"].with_transform(
-        _make_transform(data_name, n_levels, train=True),
+        _ImageTransform(col, n_levels, train=True),
     )
     test_ds = ds["test"].with_transform(
-        _make_transform(data_name, n_levels, train=False),
+        _ImageTransform(col, n_levels, train=False),
     )
 
     if torch.cuda.is_available():
         num_workers = 16 // max(1, torch.cuda.device_count())
+    elif torch.backends.mps.is_available():
+        num_workers = 4  # Apple Silicon: moderate parallelism
     else:
-        num_workers = 0  # MPS/CPU: avoid pickle issues with spawn
+        num_workers = 0
 
-    def collate(batch: list[dict[str, Any]]) -> torch.Tensor:
-        return _collate_fn(batch, col)
+    collate = _CollateFn(col)
 
     train_dataloader = DataLoader(
         train_ds,  # type: ignore[arg-type]

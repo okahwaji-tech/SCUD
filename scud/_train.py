@@ -3,6 +3,9 @@
 import glob
 import logging
 import os
+import warnings
+
+warnings.filterwarnings("ignore", message="`isinstance.*LeafSpec.*is deprecated")
 
 import certifi
 import lightning.pytorch as pl

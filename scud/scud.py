@@ -153,7 +153,7 @@ class SCUD(ContinuousTimeDiffusion):
         dv = dv @ self.eigenvectors
         dv = dv * diag
         dv = dv @ self.eigenvectors_inv
-        return F.relu(dv.double()).to(torch.float32).reshape(v.shape).to(orig_device)
+        return F.relu(dv.double().real).to(torch.float32).reshape(v.shape).to(orig_device)
 
     def get_kl_t1(self, x: torch.Tensor) -> torch.Tensor:
         # sample S
