@@ -41,6 +41,7 @@ class SCUD(ContinuousTimeDiffusion):
 
     MAX_K_POWERS = 5000
     MAX_CLASSES_FOR_PRECOMPUTE = 512
+    use_tau_at_inference: bool = False
 
     # Type annotations for register_buffer tensors
     eigenvalues: torch.Tensor

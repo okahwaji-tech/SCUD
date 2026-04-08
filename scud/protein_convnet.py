@@ -95,7 +95,7 @@ class ByteNetLMTimeNew(nn.Module):
             self.s_embed_input.mlp[2].weight.data.zero_()
             self.s_embed_input.mlp[2].bias.data.zero_()
             # Tau embedding (additive, zero-init for standard SCUD recovery)
-            self.tau_embed_input = TimestepEmbedderNew(2 * d_model)
+            self.tau_embed_input = TimestepEmbedderNew(d_model)
             self.tau_embed_block = TimestepEmbedderNew(d_embedding)
             nn.init.zeros_(self.tau_embed_input.mlp[2].weight)
             nn.init.zeros_(self.tau_embed_input.mlp[2].bias)
@@ -170,8 +170,7 @@ class ByteNetLMTimeNew(nn.Module):
                 tau_out = F.silu(self.tau_embed_input(tau.reshape(-1))).reshape(
                     tau.shape + (-1,)
                 )
-                tau_shift, _tau_scale = tau_out.chunk(2, dim=-1)
-                x = x + tau_shift  # additive only (zero-init means this starts as identity)
+                x = x + tau_out  # direct additive, no chunking needed
                 c = c + F.silu(self.tau_embed_block(tau.reshape(-1))).reshape(
                     tau.shape + (-1,)
                 )

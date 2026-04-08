@@ -34,6 +34,8 @@ class SCUD_TCR(SCUD):
         tcr_lambda_max: Maximum weight for the unrolled (Path B) loss term.
     """
 
+    use_tau_at_inference: bool = True
+
     def __init__(
         self,
         *args: object,

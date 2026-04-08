@@ -122,6 +122,7 @@ def run_sampling(cfg: DictConfig) -> None:
             attn_mask = sample_a[:1].repeat(num_samples, *[1] * (sample_a.dim() - 1)).to(device)
 
         # Run sampling
+        use_tau = getattr(model, "use_tau_at_inference", False)
         print(f"Generating {num_samples} samples with {gen_trans_step} denoising steps...")
         images = model.sample_sequence(  # type: ignore[operator]
             init_noise,
@@ -129,6 +130,7 @@ def run_sampling(cfg: DictConfig) -> None:
             n_T=gen_trans_step,
             stride=1,
             temperature=temperature,
+            use_tau=use_tau,
         )
 
     if not images:

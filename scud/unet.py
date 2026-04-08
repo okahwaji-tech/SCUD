@@ -11,6 +11,8 @@ and https://github.com/google-research/vdm
 
 from __future__ import annotations
 
+import warnings
+
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -436,6 +438,13 @@ class KingmaUNet(nn.Module):
 
             # Add tau (holding-time) embedding additively to semb.
             # Zero-init last layer ensures tau=0 or tau=None recovers standard SCUD.
+            if tau is not None and (not self.schedule_conditioning or self.tau_embed_nn is None):
+                warnings.warn(
+                    "tau passed but tau embedding is disabled "
+                    "(schedule_conditioning=False or semb_style='learn_embed'). "
+                    "tau will be ignored.",
+                    stacklevel=2,
+                )
             use_tau = (
                 tau is not None and self.schedule_conditioning and self.tau_embed_nn is not None
             )

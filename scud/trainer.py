@@ -39,11 +39,13 @@ def get_gif(
         attn_mask = sample_a.repeat(batch_size, *[1] * (sample_a.dim() - 1))
     else:
         attn_mask = None
+    use_tau = getattr(model, "use_tau_at_inference", False)
     images = model.sample_sequence(
         init_noise,
         attn_mask,
         stride=3,
         n_T=gen_trans_step,
+        use_tau=use_tau,
     )
     if images is not None:
         # image sequences to gif
@@ -90,11 +92,13 @@ def get_text(
         attn_mask = sample_a.repeat(batch_size, *[1] * (sample_a.dim() - 1))
     else:
         attn_mask = None
+    use_tau = getattr(model, "use_tau_at_inference", False)
     tokens = model.sample_sequence(
         init_noise,
         attn_mask,
         stride=3,
         n_T=gen_trans_step,
+        use_tau=use_tau,
     )
     if tokens is not None:
         last_token = tokens[-1]

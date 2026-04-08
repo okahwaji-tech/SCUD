@@ -19,7 +19,7 @@ def _eigenvector_mvp(
     eigenvectors_inv: torch.Tensor,
     eps: float = 1e-9,
 ) -> torch.Tensor:
-    """Compute K^S @ v via eigendecomposition.
+    """Compute v @ K^S via eigendecomposition.
 
     Args:
         S: Per-element exponents, shape (...).
@@ -30,7 +30,7 @@ def _eigenvector_mvp(
         eps: Unused, kept for interface consistency.
 
     Returns:
-        Result of K^S @ v, shape (..., C), clamped to non-negative.
+        Result of v @ K^S, shape (..., C), clamped to non-negative.
     """
     dv = v.to(dtype=eigenvectors.dtype).reshape(-1, v.shape[-1])
     diag = eigenvalues ** F.relu(S.flatten()[..., None])
