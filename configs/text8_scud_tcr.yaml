@@ -1,0 +1,44 @@
+data:
+    data: text8                    # dataset name
+    valid: text8                   # validation set (same dataset, test split)
+    N: 27                          # vocab size (26 chars + BOS/EOS/etc — verify with len(tokenizer))
+    tokenizer_name_or_path: text8  # routes to Text8Tokenizer
+    wrap: true                     # text8 requires wrap=true (line 419 asserts this)
+    cache_dir: ./data/text8_cache  # where to cache processed data
+
+model:
+    seed: 0
+    model: SCUD_TCR
+    gamma: 0
+    schedule_type: mutual_information
+    forward_kwargs:
+        type: uniform
+    logistic_pars: false
+    t_max: 0.999
+    restart: false
+
+architecture:
+    s_dim: 128                     # unused by DIT but needed by config schema
+    x0_model_class: DIT
+    nn_params:
+        hidden_size: 384
+        n_heads: 6
+        n_blocks: 6
+        cond_dim: 64
+        dropout: 0.1
+
+train:
+    batch_size: 32
+    n_epoch: 50
+    lr: 0.0003
+    grad_clip_val: 1
+    weight_decay: 0
+    accumulate: 16                 # accumulate to effective batch 512 (matching SEDD)
+    ema: false
+
+sampling:
+    gen_trans_step: 2048
+
+wandb:
+    project: scud-tcr
+    run_name: scud_tcr_uniform_text8

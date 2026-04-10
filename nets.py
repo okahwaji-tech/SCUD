@@ -3,6 +3,7 @@ from omegaconf import OmegaConf
 
 from scud.unet import KingmaUNet
 from scud.protein_convnet import ByteNetLMTimeNew
+from scud.dit_text import SCUD
 
 image_nn_name_dict = {
     "KingmaUNet":KingmaUNet,
@@ -10,6 +11,10 @@ image_nn_name_dict = {
 
 protein_nn_name_dict = {
     "ConvNew": ByteNetLMTimeNew
+}
+
+text_nn_name_dict = {
+    "DIT": SCUD
 }
 
 def get_model_setup(cfg, tokenizer=None):
@@ -39,3 +44,12 @@ def get_model_setup(cfg, tokenizer=None):
             **nn_params
         }
         return protein_nn_name_dict[cfg.architecture.x0_model_class], nn_params
+
+    elif cfg.architecture.x0_model_class in text_nn_name_dict:
+        if tokenizer is None:
+            raise ValueError("Tokenizer must be provided for text models.")
+        nn_params = {
+            "n_tokens": len(tokenizer),
+            **nn_params
+        }
+        return text_nn_name_dict[cfg.architecture.x0_model_class], nn_params

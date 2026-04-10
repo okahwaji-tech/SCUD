@@ -30,7 +30,8 @@ image_data_name_dict = {
 }
 
 text_data_name_dict = {
-    "lm1b": None
+    "lm1b": None,
+    "text8": None,
 }
 protein_data_name_dict = {
     "uniref50": None
