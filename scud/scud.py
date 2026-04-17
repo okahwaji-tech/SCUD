@@ -36,16 +36,19 @@ class SCUD(ContinuousTimeDiffusion):
         eigenvalues, eigenvectors = torch.linalg.eig(K.double())
         eigenvalues[torch.real(eigenvalues) > 1-self.eps] = 1
         eigenvectors_inv = torch.linalg.inv(eigenvectors)
-        self.register_buffer("eigenvalues", eigenvalues)
-        self.register_buffer("eigenvectors", eigenvectors)
-        self.register_buffer("eigenvectors_inv", eigenvectors_inv)
-        
+        # persistent=False: these are deterministic functions of forward_kwargs, num_classes, and
+        # gamma — they're recomputed in __init__ from the config, so excluding them from state_dict
+        # avoids stale/corrupt values persisting across save/load.
+        self.register_buffer("eigenvalues", eigenvalues, persistent=False)
+        self.register_buffer("eigenvectors", eigenvectors, persistent=False)
+        self.register_buffer("eigenvectors_inv", eigenvectors_inv, persistent=False)
+
         # Precalculate K_powers
         num_powers = 5000
         assert (num_classes <= 512 and forward_kwargs['type'] != "bert_embed")
         K_powers = torch.stack([torch.linalg.matrix_power(K, i) for i in range(5000)])
-        self.register_buffer("K", K)
-        self.register_buffer("K_powers", K_powers)
+        self.register_buffer("K", K, persistent=False)
+        self.register_buffer("K_powers", K_powers, persistent=False)
 
     def pre_configure_model(self, dataloader):
         self.calc_p0(dataloader)

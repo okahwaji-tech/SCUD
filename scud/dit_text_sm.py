@@ -224,9 +224,24 @@ class DDitFinalLayer(nn.Module):
         x = modulate_fused(self.norm_final(x), shift, scale)
         x = self.linear(x)
         return x
+    
+class TauZeroLinear(nn.Module):
+    """ControlNet-style zero-initialized linear layer.
 
+    Outputs exactly zero at init (weight=0, bias=0), so the τ pathway
+    starts as a no-op and the model recovers standard SCUD behavior.
+    Gradients can grow the weights once τ becomes useful.
+    """
+    def __init__(self, cond_dim):
+        super().__init__()
+        self.linear = nn.Linear(cond_dim, cond_dim, bias=True)
+        self.linear.weight.data.zero_()
+        self.linear.bias.data.fill_(0.0)
 
-class SCUD(nn.Module, PyTorchModelHubMixin):
+    def forward(self, x):
+        return self.linear(x)
+
+class SMSCUD(nn.Module, PyTorchModelHubMixin):
     def __init__(self, n_tokens, n_heads, n_blocks, hidden_size, cond_dim, dropout=0.1):
         super().__init__()
 
@@ -234,7 +249,9 @@ class SCUD(nn.Module, PyTorchModelHubMixin):
 
         self.vocab_embed = EmbeddingLayer(hidden_size, vocab_size)
         self.sigma_map = TimestepEmbedder(cond_dim)
+        self.tau_map = TimestepEmbedder(cond_dim)
         self.rotary_emb = rotary.Rotary(hidden_size // n_heads)
+        self.tau_zero_linear = TauZeroLinear(cond_dim)
 
         self.blocks = nn.ModuleList([
             DDiTBlock(hidden_size, n_heads, cond_dim, dropout=dropout) for _ in range(n_blocks)
@@ -251,10 +268,15 @@ class SCUD(nn.Module, PyTorchModelHubMixin):
         )
 
 
-    def forward(self, x_t, t, attn_mask=None, S=None):
+    def forward(self, x_t, t, attn_mask=None, S=None, tau=None):
 
         x = self.vocab_embed(x_t)
-        c = F.silu(self.sigma_map(S))
+        c_s = F.silu(self.sigma_map(S))
+
+        tau_emb = F.silu(self.tau_map(tau))
+        c_tau = self.tau_zero_linear(tau_emb)
+        
+        c = c_s + c_tau
 
         rotary_cos_sin = self.rotary_emb(x)
 

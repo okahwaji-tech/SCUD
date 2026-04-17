@@ -94,12 +94,19 @@ class ContinuousTimeDiffusion(DiffusionTrainer):
         # Call the parent class's load_state_dict method
         missing_keys, unexpected_keys = super().load_state_dict(state_dict, strict=False)
 
-        # Load the additional state dict variables
-        for key in ['p0_inds', 'p0_rank', 'K', 'L', 'K_coo', 'K_csc', 'K_T', 'L_T', 'stat', 'stationary']:
+        # Load additional state dict variables that aren't registered as buffers.
+        # Kernel-derived tensors (K, K_powers, L, eigenvalues, etc.) are excluded —
+        # they are deterministic functions of the config and recomputed in __init__.
+        kernel_keys = {'K', 'K_powers', 'L', 'K_coo', 'K_csc', 'K_T', 'L_T',
+                       'eigenvalues', 'eigenvectors', 'eigenvectors_inv'}
+        for key in ['p0_inds', 'p0_rank', 'stat', 'stationary']:
             if key in state_dict:
                 setattr(self, key, state_dict[key])
                 if key in unexpected_keys:
                     unexpected_keys.remove(key)
+        for key in kernel_keys:
+            if key in unexpected_keys:
+                unexpected_keys.remove(key)
             # elif strict:
             #     missing_keys.append(key)
 
@@ -119,22 +126,19 @@ class ContinuousTimeDiffusion(DiffusionTrainer):
     @classmethod
     def load_from_checkpoint(cls, checkpoint_path, map_location=None, **kwargs):
         print("Loading checkpoint ...")
-        checkpoint = torch.load(checkpoint_path, map_location=map_location)
+        checkpoint = torch.load(checkpoint_path, map_location=map_location, weights_only=False)
         hparams = checkpoint['hyper_parameters']
         
         # Get the x0_model_class
-        from scud.unet import UNet, KingmaUNet, SimpleUNet, GigaUNet
-        from scud.dit_vision import DiT_Llama
-        from scud.dit_text import DIT
-        from scud.protein_convnet import ByteNetLMTime
+        from scud.unet import KingmaUNet
+        from scud.dit_text import SCUD as DIT
+        from scud.dit_text_sm import SMSCUD
+        from scud.protein_convnet import ByteNetLMTimeNew as ByteNetLMTime
         x0_model_class = {
-            "SimpleUNet":SimpleUNet,
-            "KingmaUNet":KingmaUNet,
-            "UNet":UNet,
-            "GigaUNet":GigaUNet,
-            "DiT_Llama":DiT_Llama,
+            "KingmaUNet": KingmaUNet,
             "DIT": DIT,
-            "ByteNetLMTime": ByteNetLMTime
+            "SMSCUD": SMSCUD,
+            "ByteNetLMTime": ByteNetLMTime,
         }[hparams['x0_model_class']]
         hparams['x0_model_class'] = x0_model_class
 

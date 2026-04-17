@@ -8,7 +8,7 @@ data:
 
 model:
     seed: 0
-    model: SCUD_TCR
+    model: SM_SCUD_PT
     gamma: 0
     schedule_type: mutual_information
     forward_kwargs:
@@ -19,7 +19,7 @@ model:
 
 architecture:
     s_dim: 128                     # unused by DIT but needed by config schema
-    x0_model_class: DIT
+    x0_model_class: SM_SCUD_PT
     nn_params:
         hidden_size: 384
         n_heads: 6
@@ -29,7 +29,7 @@ architecture:
 
 train:
     batch_size: 32
-    n_epoch: 20
+    n_epoch: 10
     lr: 0.0003
     grad_clip_val: 1
     weight_decay: 0
@@ -40,5 +40,5 @@ sampling:
     gen_trans_step: 2048
 
 wandb:
-    project: scud-tcr
-    run_name: scud_tcr_uniform_text8
+    project: sm-scud-tcr
+    run_name: sm_scud_pt_uniform_text8

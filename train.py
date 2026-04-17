@@ -5,6 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import hydra
+from scud.sm_scud_tcr import SM_SCUD_TCR
 import wandb
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader, random_split
@@ -17,11 +18,14 @@ from pytorch_lightning.strategies import DDPStrategy
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.utilities import rank_zero_only
 import pytorch_lightning as pl
+from scud.scud_sm_pretrain import SM_SCUD_PT
 
 from evodiff.utils import Tokenizer
 
 from scud.scud import SCUD
 from scud.scud_tcr import SCUD_TCR
+from scud.sm_scud_tcr import SM_SCUD_TCR
+from scud.scud_sm_pretrain import SM_SCUD_PT
 from scud.masking_diffusion import MaskingDiffusion
 from scud.classical_diffusion import ClassicalDiffusion
 
@@ -39,7 +43,6 @@ def train(cfg: DictConfig) -> None:
     @rank_zero_only
     def init_wandb():
         wandb.login()
-        wandb.init()
     init_wandb()
     ##### Load data
     pl.seed_everything(cfg.model.seed, workers=True)
@@ -56,28 +59,42 @@ def train(cfg: DictConfig) -> None:
     ##### Pick model
     model_name_dict = {"SCUD":SCUD,
                        "SCUD_TCR":SCUD_TCR,
+                       "SM_SCUD_TCR": SM_SCUD_TCR,
                        "Masking":MaskingDiffusion,
-                       "Classical": ClassicalDiffusion,}
-    if not cfg.model.restart:
-        model = model_name_dict[cfg.model.model](
-            x0_model_class,
-            nn_params,
-            num_classes=len(tokenizer) if tokenizer else cfg.data.N,
-            gamma=cfg.model.gamma,
-            forward_kwargs=OmegaConf.to_container(cfg.model.forward_kwargs, resolve=True),
-            schedule_type=cfg.model.schedule_type,
-            logistic_pars=cfg.model.logistic_pars,
-            gen_trans_step=cfg.sampling.gen_trans_step,
-            t_max=cfg.model.t_max,
-            seed=cfg.model.seed,
-            tokenizer=tokenizer if cfg.data.data != 'uniref50' else Tokenizer(),
-            **OmegaConf.to_container(cfg.train, resolve=True),
-        )
-        ckpt_path = None
+                       "Classical": ClassicalDiffusion,
+                       "SM_SCUD_PT": SM_SCUD_PT}
+    model = model_name_dict[cfg.model.model](
+        x0_model_class,
+        nn_params,
+        num_classes=len(tokenizer) if tokenizer else cfg.data.N,
+        gamma=cfg.model.gamma,
+        forward_kwargs=OmegaConf.to_container(cfg.model.forward_kwargs, resolve=True),
+        schedule_type=cfg.model.schedule_type,
+        logistic_pars=cfg.model.logistic_pars,
+        gen_trans_step=cfg.sampling.gen_trans_step,
+        t_max=cfg.model.t_max,
+        seed=cfg.model.seed,
+        tokenizer=tokenizer if cfg.data.data != 'uniref50' else Tokenizer(),
+        **OmegaConf.to_container(cfg.train, resolve=True),
+    )
+    if cfg.model.restart:
+        # Load weights from a previous run's checkpoint (e.g., pretrain → fine-tune).
+        # We construct the model fresh with the current config and only transfer weights,
+        # so config changes (different loss class, unfrozen modules, etc.) take effect.
+        # Kernel buffers (K, K_powers, eigenvalues, etc.) are persistent=False so they
+        # are recomputed fresh and not overwritten by load_state_dict.
+        ckpt_dir = f'checkpoints/{cfg.model.restart}'
+        ckpt_path = max(glob.glob(os.path.join(ckpt_dir, '*.ckpt')), key=os.path.getmtime)
+        print(f"Loading weights from: {ckpt_path}")
+        ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)
+        missing, unexpected = model.load_state_dict(ckpt['state_dict'], strict=False)
+        if missing:
+            print(f"Missing keys (random init): {missing}")
+        if unexpected:
+            print(f"Unexpected keys (ignored): {unexpected}")
+        ckpt_path = None  # don't pass to trainer.fit — we just want weights, not optimizer state
     else:
-        ckpt_path = f'checkpoints/{cfg.model.restart}'
-        ckpt_path = max(glob.glob(os.path.join(ckpt_path, '*.ckpt')), key=os.path.getmtime)
-        model = model_name_dict[cfg.model.model].load_from_checkpoint(ckpt_path)
+        ckpt_path = None
 
     ##### Load data
     model.pre_configure_model(train_dataloader)
@@ -89,7 +106,7 @@ def train(cfg: DictConfig) -> None:
     torch.set_float32_matmul_precision('high')
     @rank_zero_only
     def update_wandb_config():
-        wandb.config.update(lightning_model.hparams)
+        wandb_logger.experiment.config.update(lightning_model.hparams)
     update_wandb_config()
 
     if cfg.data.data == 'uniref50':

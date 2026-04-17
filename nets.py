@@ -1,6 +1,7 @@
 
 from omegaconf import OmegaConf
 
+from scud.dit_text_sm import SMSCUD
 from scud.unet import KingmaUNet
 from scud.protein_convnet import ByteNetLMTimeNew
 from scud.dit_text import SCUD
@@ -14,7 +15,9 @@ protein_nn_name_dict = {
 }
 
 text_nn_name_dict = {
-    "DIT": SCUD
+    "DIT": SCUD,
+    "SM_SCUD_TCR": SMSCUD,
+    "SM_SCUD_PT": SMSCUD
 }
 
 def get_model_setup(cfg, tokenizer=None):

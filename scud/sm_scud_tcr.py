@@ -1,5 +1,5 @@
 """
-SCUD with Trajectory Consistency Regularization (TCR).
+SCUD with Trajectory Consistency Regularization (TCR) and Semi-Markov Conditioning.
 
 Subclasses SCUD and overrides forward() to add Path B:
   Path A: standard SCUD ELBO loss on forward-corrupted data
@@ -17,15 +17,25 @@ from .tcr import detached_predict, scud_backward_transition, sample_s_low, grad_
 from .utils import kls
 
 
-class SCUD_TCR(SCUD):
+class SM_SCUD_TCR(SCUD):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        for p in self.x0_model.tau_map.parameters(): p.requires_grad_(True)
+        for p in self.x0_model.tau_zero_linear.parameters(): p.requires_grad_(True)
+
+        
+    def base_predict(self, x_t, t, attn_mask, S=None):
+        assert S is not None
+        if not hasattr(self, '_tau') or self._tau.shape != S.shape:
+            self._tau = torch.zeros_like(S)
+        return self.x0_model(x_t, t, attn_mask, S, self._tau).to(torch.float32)
 
     def forward(self, x, attn_mask=None):
         # =============================================
         # Path A: standard SCUD ELBO loss
         # =============================================
         t, S, x_t = self.sample_point(x, attn_mask)
+        self._tau = torch.zeros_like(S)
         predicted_x0_logits = self.model_predict(x_t, t, attn_mask, S).to(torch.float32)
 
         true_q_posterior_logits = self.q_posterior_logits(x, x_t, t, S)
@@ -48,6 +58,8 @@ class SCUD_TCR(SCUD):
 
         # Sample intermediate noise level
         s_low, k = sample_s_low(S)
+        
+        self._tau = k
 
         # Generate faithful intermediate state via Eq. 21
         x_unrolled = scud_backward_transition(
@@ -84,9 +96,13 @@ class SCUD_TCR(SCUD):
         else:
             ce_loss = ce_loss.mean()
 
+        tau_weight_norm = self.x0_model.tau_zero_linear.linear.weight.data.norm().item()
+        if self.training:
+            self.log('tau_weight_norm', tau_weight_norm, sync_dist=True)
         return loss, {
             "vb_loss": loss_A.detach().item(),
             "ce_loss_tcr": loss_B.detach().item(),
             "ce_loss": ce_loss.detach().item(),
             "grad_norm_w": w.item() if isinstance(w, torch.Tensor) else w,
+            "tau_weight_norm": tau_weight_norm,
         }
