@@ -13,29 +13,29 @@ import torch
 import torch.nn.functional as F
 
 from .scud import SCUD
-from .tcr import detached_predict, scud_backward_transition, sample_s_low, grad_norm_weight
+from .tcr import compute_kernel_consistency_score, detached_predict, grad_norm_weight
 from .utils import kls
 
 
 class SM_SCUD_TCR(SCUD):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        for p in self.x0_model.tau_map.parameters(): p.requires_grad_(True)
-        for p in self.x0_model.tau_zero_linear.parameters(): p.requires_grad_(True)
+        for p in self.x0_model.score_map.parameters(): p.requires_grad_(True)
+        for p in self.x0_model.score_zero_linear.parameters(): p.requires_grad_(True)
 
         
     def base_predict(self, x_t, t, attn_mask, S=None):
         assert S is not None
-        if not hasattr(self, '_tau') or self._tau.shape != S.shape:
-            self._tau = torch.zeros_like(S)
-        return self.x0_model(x_t, t, attn_mask, S, self._tau).to(torch.float32)
+        if not hasattr(self, '_score') or self._score.shape != S.shape:
+            self._score = torch.zeros(S.shape, device=S.device, dtype=torch.float32)
+        return self.x0_model(x_t, t, attn_mask, S, self._score).to(torch.float32)
 
     def forward(self, x, attn_mask=None):
         # =============================================
         # Path A: standard SCUD ELBO loss
         # =============================================
         t, S, x_t = self.sample_point(x, attn_mask)
-        self._tau = torch.zeros_like(S)
+        self._score = torch.zeros(S.shape, device=S.device, dtype=torch.float32)
         predicted_x0_logits = self.model_predict(x_t, t, attn_mask, S).to(torch.float32)
 
         true_q_posterior_logits = self.q_posterior_logits(x, x_t, t, S)
@@ -56,28 +56,27 @@ class SM_SCUD_TCR(SCUD):
         # Reuse Path A logits (detached) to get x̂_0
         x0_hat, _ = detached_predict(self, x_t, t, attn_mask, S)
 
-        # Sample intermediate noise level
-        s_low, k = sample_s_low(S)
-        
-        self._tau = k
-
-        # Generate faithful intermediate state via Eq. 21
-        x_unrolled = scud_backward_transition(
-            x_t, x0_hat, self.K_powers, S, k, self.num_classes,
-            self.eigenvectors, self.eigenvalues, self.eigenvectors_inv,
+        score, loss_weight = compute_kernel_consistency_score(
+            x0_hat, x_t, S, self.K_powers, self.log_K_powers_max,
         )
 
-        # Forward pass on unrolled state with gradients
-        predicted_x0_logits_B = self.model_predict(x_unrolled, t, attn_mask, s_low).to(torch.float32)
+        # Forward pass in correction mode: S=0, score as conditioning
+        S_zero = torch.zeros_like(S)
+        self._score = score
+        predicted_x0_logits_B = self.model_predict(x0_hat, t, attn_mask, S_zero).to(torch.float32)
 
-        # Unweighted CE against ground truth
+        # CE against ground truth
+        # TODO: re-enable per-position score weighting once base correction is validated
+        # loss_weight_flat = loss_weight.flatten()
+        # loss_B = (per_position_ce * loss_weight_flat * mask_flat).sum() / mask_flat.sum()
         ce_logits_B = predicted_x0_logits_B.flatten(start_dim=0, end_dim=-2)
         ce_targets_B = x.flatten(start_dim=0, end_dim=-1)
-        loss_B = F.cross_entropy(ce_logits_B, ce_targets_B, reduction='none')
+        per_position_ce = F.cross_entropy(ce_logits_B, ce_targets_B, reduction='none')
         if attn_mask is not None:
-            loss_B = (loss_B * attn_mask.flatten()).sum() / attn_mask.sum()
+            mask_flat = attn_mask.flatten()
+            loss_B = (per_position_ce * mask_flat).sum() / mask_flat.sum()
         else:
-            loss_B = loss_B.mean()
+            loss_B = per_position_ce.mean()
 
         # =============================================
         # Combined loss with gradient normalization
@@ -96,13 +95,14 @@ class SM_SCUD_TCR(SCUD):
         else:
             ce_loss = ce_loss.mean()
 
-        tau_weight_norm = self.x0_model.tau_zero_linear.linear.weight.data.norm().item()
+        score_weight_norm = self.x0_model.score_zero_linear.weight.data.norm().item()
         if self.training:
-            self.log('tau_weight_norm', tau_weight_norm, sync_dist=True)
+            self.log('score_weight_norm', score_weight_norm, sync_dist=True)
         return loss, {
             "vb_loss": loss_A.detach().item(),
-            "ce_loss_tcr": loss_B.detach().item(),
+            "ce_loss_correction": loss_B.detach().item(),
             "ce_loss": ce_loss.detach().item(),
             "grad_norm_w": w.item() if isinstance(w, torch.Tensor) else w,
-            "tau_weight_norm": tau_weight_norm,
+            "score_weight_norm": score_weight_norm,
+            "mean_score": score.mean().item(),
         }

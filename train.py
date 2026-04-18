@@ -5,7 +5,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import hydra
-from scud.sm_scud_tcr import SM_SCUD_TCR
 import wandb
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader, random_split
@@ -23,7 +22,6 @@ from scud.scud_sm_pretrain import SM_SCUD_PT
 from evodiff.utils import Tokenizer
 
 from scud.scud import SCUD
-from scud.scud_tcr import SCUD_TCR
 from scud.sm_scud_tcr import SM_SCUD_TCR
 from scud.scud_sm_pretrain import SM_SCUD_PT
 from scud.masking_diffusion import MaskingDiffusion
@@ -58,7 +56,6 @@ def train(cfg: DictConfig) -> None:
     
     ##### Pick model
     model_name_dict = {"SCUD":SCUD,
-                       "SCUD_TCR":SCUD_TCR,
                        "SM_SCUD_TCR": SM_SCUD_TCR,
                        "Masking":MaskingDiffusion,
                        "Classical": ClassicalDiffusion,
@@ -110,7 +107,7 @@ def train(cfg: DictConfig) -> None:
     update_wandb_config()
 
     if cfg.data.data == 'uniref50':
-        val_check_interval = 2 * (210000//cfg.train.batch_size)
+        val_check_interval = min(2 * (210000//cfg.train.batch_size), len(train_dataloader))
     else:
         val_check_interval = 1.0
     trainer = Trainer(
@@ -118,7 +115,7 @@ def train(cfg: DictConfig) -> None:
         accelerator='auto', 
         devices=torch.cuda.device_count(), 
         logger=wandb_logger, 
-        strategy=DDPStrategy(broadcast_buffers=True),
+        strategy=DDPStrategy(broadcast_buffers=True, find_unused_parameters=True),
         callbacks=([EMA(0.9999)] * cfg.train.ema
                    +[ModelCheckpoint(dirpath=f'checkpoints/{wandb_logger.experiment.name}',
                                    save_on_train_epoch_end=False)]),

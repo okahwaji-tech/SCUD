@@ -140,6 +140,9 @@ class DiffusionTrainer(pl.LightningModule):
                 
         self.log('train_loss', info['vb_loss'], sync_dist=True)
         self.log('train_ce_loss', info['ce_loss'], sync_dist=True)
+        for key in ['ce_loss_correction', 'grad_norm_w', 'mean_score']:
+            if key in info:
+                self.log(f'train_{key}', info[key], sync_dist=True)
         # with torch.no_grad():
         #     param_norm = sum([torch.norm(p) for p in self.parameters()])
         # self.log('param_norm', param_norm, sync_dist=True)

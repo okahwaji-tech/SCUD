@@ -36,78 +36,48 @@ def detached_predict(model, x_t, t, attn_mask, S, tau=None):
         )
     return x0_hat, x0_logits
 
-def scud_backward_transition(x_t, x0_hat, K_powers, S, k, num_classes, eigenvectors, eigenvalues, eigenvectors_inv, eps=1e-9):
+def compute_kernel_consistency_score(x0_hat, x_t, S, K_powers, log_K_powers_max, clamp_min=-10.0):
     """
-    Eq. 21 from SCUD paper: sample x_{t-k} from the posterior.
+    Compute kernel-consistent self-correction score.
 
-    Produces states from the same distribution as inference by combining
-    the forward likelihood K^k @ x_t with the backward prior K^{s-k,T} @ x̂_0.
+    Measures how consistent the model's prediction x0_hat is with the observed
+    corruption x_t given event count S, using the kernel's own transition
+    probabilities. Normalized by the best possible prediction at each (S, x_t).
+
+    Called with Path A's (x0_hat, x_t, S) to produce conditioning and loss
+    weights for Path B, where the model sees x0_hat at s=0 everywhere.
 
     Args:
-        x_t: current noisy tokens [batch, ...] (integer indices)
-        x0_hat: detached model prediction [batch, ...] (integer indices)
-        K_powers: precomputed K^i matrices [num_powers, num_classes, num_classes]
-        S: current event counts [batch, ...]
-        k: events to reverse [batch, ...]
-        num_classes: vocabulary size
-        eigenvectors, eigenvalues, eigenvectors_inv: eigen-decomposition of K
-            for computing K^n @ v via spectral method
-        eps: numerical stability
+        x0_hat: model predictions [batch, seq_len] (long)
+        x_t: corrupted tokens [batch, seq_len] (long)
+        S: event counts [batch, seq_len] (long) — from Path A corruption
+        K_powers: precomputed K^i [num_powers, num_classes, num_classes]
+        log_K_powers_max: precomputed log(max_v K^i[v, :]) [num_powers, num_classes]
+        clamp_min: lower bound for normalized log score (default -10)
 
     Returns:
-        x_unrolled: sampled tokens at noise level S-k [batch, ...]
+        score: normalized log consistency [batch, seq_len], in [clamp_min, 0]
+        loss_weight: -score [batch, seq_len], in [0, -clamp_min]
     """
-    # Likelihood: p(x_t | x_{t-k}) = K^k[x_t, :] (transpose convention)
-    # K_powers is [num_powers, num_classes, num_classes]
-    # We need K_powers[k, x_t, :] with per-position k
-    fact1 = K_powers.swapaxes(1, 2)[k, x_t, :]  # [batch, ..., num_classes]
+    S = S.long()
+    x0_hat = x0_hat.long()
+    x_t = x_t.long()
 
-    # Prior: p(x_{t-k} | x_0) = K^{S-k} @ one_hot(x0_hat)
-    x0_probs = F.one_hot(x0_hat.long(), num_classes).float()
-    Smk = S - k  # remaining events after reversal
-    fact2 = _eigenvector_mvp(Smk, x0_probs, eigenvectors, eigenvalues, eigenvectors_inv, eps)
+    # Clamp S to valid index range for K_powers
+    S_clamped = S.clamp(0, K_powers.shape[0] - 1)
 
-    # Posterior: element-wise product, then normalize
-    probs = fact1 * fact2
-    probs = probs.clamp(min=0)
-    probs = probs / (probs.sum(dim=-1, keepdim=True) + eps)
+    # Raw transition probability: K^s[x0_hat, x_t] per position
+    log_p = torch.log(K_powers[S_clamped, x0_hat, x_t].clamp(min=1e-9))
 
-    # Sample via Gumbel-max
-    noise = torch.rand_like(probs).clamp(min=eps)
-    gumbel_noise = 1 / (-torch.log(noise))
-    x_unrolled = torch.argmax(probs * gumbel_noise, dim=-1)
+    # Best possible prediction at this (s, x_t) pair
+    log_p_max = log_K_powers_max[S_clamped, x_t]
 
-    return x_unrolled
+    # Normalize: 0 = best possible, negative = worse
+    score = (log_p - log_p_max).clamp(min=clamp_min)
 
-def _eigenvector_mvp(S, v, eigenvectors, eigenvalues, eigenvectors_inv, eps=1e-9):
-    """
-    Compute K^S @ v using eigen-decomposition: V @ diag(λ^S) @ V^{-1} @ v.
+    loss_weight = -score
 
-    This mirrors SCUD.get_trans_mats_mvp but operates on arbitrary inputs.
-    """
-    dv = v.to(dtype=eigenvectors.dtype).reshape(-1, v.shape[-1])
-    diag = eigenvalues ** F.relu(S.flatten()[..., None])
-    dv = dv @ eigenvectors
-    dv = dv * diag
-    dv = dv @ eigenvectors_inv
-    return F.relu(dv.double()).to(torch.float32).reshape(v.shape)
-
-def sample_s_low(S):
-    """
-    Sample target noise levels uniformly: s_low^d ~ Uniform(0, s_high^d).
-
-    Args:
-        S: current event counts [batch, ...] (integer)
-
-    Returns:
-        s_low: target event counts [batch, ...], 0 <= s_low < S per position
-        k: number of events to reverse, k = S - s_low
-    """
-    # For positions where S=0, s_low=0 and k=0 (no reversal)
-    s_low = (torch.rand_like(S.float()) * S.float()).long()
-    k = S - s_low
-    return s_low, k
-
+    return score, loss_weight
 
 def grad_norm_weight(loss_main, loss_aux, parameters):
     """

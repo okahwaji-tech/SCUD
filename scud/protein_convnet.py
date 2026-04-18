@@ -85,8 +85,12 @@ class ByteNetLMTimeNew(nn.Module):
         self.dropout = dropout
         self.decoder = PositionFeedForward(d_model, n_tokens)
         self.last_norm = nn.LayerNorm(d_model)
+        self.score_map = TimestepEmbedderNew(d_embedding)
+        self.score_zero_linear = nn.Linear(d_embedding, d_embedding)
+        self.score_zero_linear.weight.data.zero_()
+        self.score_zero_linear.bias.data.zero_()
 
-    def forward(self, x, t, input_mask=None, S=None):
+    def forward(self, x, t, input_mask=None, S=None, score=None):
         """
         :param x: (batch, length)
         :param y: (batch)
@@ -101,6 +105,9 @@ class ByteNetLMTimeNew(nn.Module):
             S_out = F.silu(self.s_embed_input(S.reshape(-1))).reshape(S.shape+(-1,))
             x = modulate_fused(x,*S_out.chunk(2, dim=-1))
             c = F.silu(self.s_embed_block(S.reshape(-1))).reshape(S.shape+(-1,))
+            if score is not None:
+                score_emb = F.silu(self.score_map(score.reshape(-1))).reshape(score.shape + (-1,))
+                c = c + self.score_zero_linear(score_emb)
         else:
             t_out = F.silu(self.time_embed_input(t))[:, None, :]
             x = modulate_fused(x,*t_out.chunk(2, dim=-1))

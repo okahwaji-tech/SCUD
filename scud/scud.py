@@ -46,7 +46,9 @@ class SCUD(ContinuousTimeDiffusion):
         # Precalculate K_powers
         num_powers = 5000
         assert (num_classes <= 512 and forward_kwargs['type'] != "bert_embed")
-        K_powers = torch.stack([torch.linalg.matrix_power(K, i) for i in range(5000)])
+        K_powers = torch.stack([torch.linalg.matrix_power(K, i) for i in range(num_powers)])
+        log_K_powers_max = torch.log(K_powers.max(dim=1).values.clamp(min=1e-9))
+        self.register_buffer("log_K_powers_max", log_K_powers_max, persistent=False)
         self.register_buffer("K", K, persistent=False)
         self.register_buffer("K_powers", K_powers, persistent=False)
 

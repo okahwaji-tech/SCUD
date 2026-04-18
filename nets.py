@@ -24,6 +24,7 @@ def get_model_setup(cfg, tokenizer=None):
     schedule_conditioning = cfg.model.model in [
         "ScheduleCondition", "DiscreteScheduleCondition",
         "MaskingDiffusion",
+        "SCUD", "SCUD_TCR", "SM_SCUD_TCR", "SM_SCUD_PT",
     ]
     nn_params = cfg.architecture.nn_params
     nn_params = (OmegaConf.to_container(nn_params, resolve=True)

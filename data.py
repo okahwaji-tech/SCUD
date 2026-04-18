@@ -725,8 +725,9 @@ def get_img_dataloaders(cfg):
     return train_dataloader, test_dataloader
 
 from sequence_models.datasets import UniRefDataset
+from torch.utils.data import Subset
 from evodiff.utils import Tokenizer
-from scud.utils import _pad 
+from scud.utils import _pad
 import numpy as np
 
 def get_protein_dataloaders(cfg):
@@ -737,6 +738,9 @@ def get_protein_dataloaders(cfg):
     print("Getting Uniref.")
     train_dataset = UniRefDataset('data/uniref_2020/uniref50/', 'train', structure=False, max_len=max_len)
     test_dataset = UniRefDataset('data/uniref_2020/uniref50/', 'test', structure=False, max_len=max_len)
+    if hasattr(cfg.data, 'subset_size') and cfg.data.subset_size:
+        train_dataset = Subset(train_dataset, range(cfg.data.subset_size))
+        test_dataset = Subset(test_dataset, range(min(cfg.data.subset_size, len(test_dataset))))
 
     def mask_pad(tokenized):
         masks = tokenized != tokenizer.pad_id

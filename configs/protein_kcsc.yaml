@@ -5,7 +5,7 @@ data:
 
 model:
     seed: 0
-    model: SCUD
+    model: SM_SCUD_TCR
     gamma: 0
     schedule_type: mutual_information
     forward_kwargs:
@@ -40,4 +40,4 @@ sampling:
 
 wandb:
     project: scud-kcsc
-    run_name: scud_baseline_blosum_uniref50
+    run_name: kcsc_blosum_uniref50
