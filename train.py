@@ -60,6 +60,9 @@ def train(cfg: DictConfig) -> None:
                        "Masking":MaskingDiffusion,
                        "Classical": ClassicalDiffusion,
                        "SM_SCUD_PT": SM_SCUD_PT}
+    model_kwargs = {}
+    if hasattr(cfg.model, 'score_weighted_loss'):
+        model_kwargs['score_weighted_loss'] = cfg.model.score_weighted_loss
     model = model_name_dict[cfg.model.model](
         x0_model_class,
         nn_params,
@@ -73,6 +76,7 @@ def train(cfg: DictConfig) -> None:
         seed=cfg.model.seed,
         tokenizer=tokenizer if cfg.data.data != 'uniref50' else Tokenizer(),
         **OmegaConf.to_container(cfg.train, resolve=True),
+        **model_kwargs,
     )
     if cfg.model.restart:
         # Load weights from a previous run's checkpoint (e.g., pretrain → fine-tune).

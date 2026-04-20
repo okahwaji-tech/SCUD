@@ -1,0 +1,44 @@
+data:
+    data: uniref50
+    N: 31
+    subset_size: 100_000
+
+model:
+    seed: 0
+    model: SM_SCUD_TCR
+    gamma: 0
+    schedule_type: mutual_information
+    forward_kwargs:
+        type: blosum
+        normalized: true
+        beta: 1
+        alpha: 1
+        make_sym: false
+    logistic_pars: false
+    t_max: 0.999
+    restart: false
+    score_weighted_loss: true
+
+architecture:
+    s_dim: 128
+    nn_params:
+        depth: 16
+        slim: true
+    x0_model_class: ConvNew
+
+train:
+    batch_size: 64
+    n_epoch: 5
+    lr: 0.0001
+    grad_clip_val: 1
+    weight_decay: 0
+    accumulate: 2
+    ema: false
+    pack: true
+
+sampling:
+    gen_trans_step: 2048
+
+wandb:
+    project: scud-kcsc
+    run_name: kcsc_weighted_blosum_uniref50
