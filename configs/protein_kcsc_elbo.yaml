@@ -17,7 +17,7 @@ model:
     logistic_pars: false
     t_max: 0.999
     restart: false
-    correction_weighting: score
+    correction_weighting: elbo
 
 architecture:
     s_dim: 128
@@ -41,4 +41,4 @@ sampling:
 
 wandb:
     project: scud-kcsc
-    run_name: kcsc_weighted_blosum_uniref50
+    run_name: kcsc_elbo_blosum_uniref50

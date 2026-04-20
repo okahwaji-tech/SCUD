@@ -5,12 +5,13 @@ Subclasses SCUD and overrides forward() to add Path B:
   Path A: standard SCUD ELBO loss on forward-corrupted data (S > 0, score = 0)
   Path B: CE on model predictions in correction mode (S = 0, score conditioning)
 
-Optionally weights Path B loss by normalized kernel consistency score,
-focusing gradient on positions where the model's predictions are least
-consistent with the observed corruption.
+Path B correction loss weighting is configurable via correction_weighting:
+  - "uniform": unweighted CE (default)
+  - "score": normalized kernel consistency score (-score / mean(-score))
+  - "elbo": same S-based ELBO weighting as Path A, aligning gradient emphasis
 
-Gradient normalization balances the two losses (different scales),
-then combined as (loss_A + w * loss_B) / 2.
+Gradient normalization balances the two losses when their scales differ.
+Combined as (loss_A + w * loss_B) / 2.
 """
 
 import torch
@@ -22,13 +23,15 @@ from .utils import kls
 
 
 class SM_SCUD_TCR(SCUD):
-    def __init__(self, *args, score_weighted_loss=False, **kwargs):
+    def __init__(self, *args, correction_weighting="uniform", **kwargs):
         super().__init__(*args, **kwargs)
-        self.score_weighted_loss = score_weighted_loss
+        assert correction_weighting in ("uniform", "score", "elbo"), \
+            f"Unknown correction_weighting: {correction_weighting}"
+        self.correction_weighting = correction_weighting
         for p in self.x0_model.score_map.parameters(): p.requires_grad_(True)
         for p in self.x0_model.score_zero_linear.parameters(): p.requires_grad_(True)
 
-        
+
     def base_predict(self, x_t, t, attn_mask, S=None):
         assert S is not None
         if not hasattr(self, '_score') or self._score.shape != S.shape:
@@ -49,14 +52,14 @@ class SM_SCUD_TCR(SCUD):
         kl = kls(true_q_posterior_logits, pred_q_posterior_logits)
         if attn_mask is not None:
             kl = kl * attn_mask
-        weight = -self.beta(t) / self.log_alpha(t)
-        weight = (S.swapaxes(0, -1) * weight).swapaxes(0, -1)
-        loss_A = (kl * weight).mean() * self.t_max
+        elbo_weight = -self.beta(t) / self.log_alpha(t)
+        elbo_weight = (S.swapaxes(0, -1) * elbo_weight).swapaxes(0, -1)
+        loss_A = (kl * elbo_weight).mean() * self.t_max
         if attn_mask is not None:
             loss_A = loss_A / attn_mask.mean()
 
         # =============================================
-        # Path B: unweighted CE on model-generated trajectory
+        # Path B: correction on model predictions
         # =============================================
         # Reuse Path A logits (detached) to get x̂_0
         x0_hat, _ = detached_predict(self, x_t, t, attn_mask, S)
@@ -74,16 +77,24 @@ class SM_SCUD_TCR(SCUD):
         ce_logits_B = predicted_x0_logits_B.flatten(start_dim=0, end_dim=-2)
         ce_targets_B = x.flatten(start_dim=0, end_dim=-1)
         per_position_ce = F.cross_entropy(ce_logits_B, ce_targets_B, reduction='none')
-        if self.score_weighted_loss:
-            # Normalize loss_weight to mean 1 so it reweights relative importance
-            # without inflating total loss magnitude
+
+        if self.correction_weighting == "score":
+            # Normalize to mean 1 — reweights relative importance without inflating magnitude
             norm_weight = loss_weight / (loss_weight.mean() + 1e-8)
-            norm_weight_flat = norm_weight.flatten()
+            correction_weight = norm_weight.flatten()
+        elif self.correction_weighting == "elbo":
+            # Same S-based weighting as Path A — aligns gradient emphasis across paths
+            correction_weight = elbo_weight.flatten()
+        else:
+            # Uniform — no per-position weighting
+            correction_weight = None
+
+        if correction_weight is not None:
             if attn_mask is not None:
                 mask_flat = attn_mask.flatten()
-                loss_B = (per_position_ce * norm_weight_flat * mask_flat).sum() / mask_flat.sum()
+                loss_B = (per_position_ce * correction_weight * mask_flat).sum() / mask_flat.sum()
             else:
-                loss_B = (per_position_ce * norm_weight_flat).mean()
+                loss_B = (per_position_ce * correction_weight).mean()
         else:
             if attn_mask is not None:
                 mask_flat = attn_mask.flatten()
@@ -92,15 +103,13 @@ class SM_SCUD_TCR(SCUD):
                 loss_B = per_position_ce.mean()
 
         # =============================================
-        # Combined loss
+        # Combined loss with optional gradient normalization
         # =============================================
-        # TODO: re-enable gradient normalization if loss scales diverge
-        # if self.training:
-        #     w = grad_norm_weight(loss_A, loss_B, self.parameters())
-        # else:
-        #     w = 1.0
-        w = 1.0
-        loss = (loss_A + loss_B) / 2
+        if self.correction_weighting in ("score", "elbo") and self.training:
+            w = grad_norm_weight(loss_A, loss_B, self.parameters())
+        else:
+            w = 1.0
+        loss = (loss_A + w * loss_B) / 2
 
         # CE loss for logging (from Path A prediction)
         ce_logits_A = predicted_x0_logits.flatten(start_dim=0, end_dim=-2)
@@ -110,7 +119,7 @@ class SM_SCUD_TCR(SCUD):
         else:
             ce_loss = ce_loss.mean()
 
-        # Unweighted correction CE for monitoring (independent of score weighting)
+        # Unweighted correction CE for monitoring (independent of weighting scheme)
         if attn_mask is not None:
             ce_loss_correction_unweighted = (per_position_ce * mask_flat).sum() / mask_flat.sum()
         else:

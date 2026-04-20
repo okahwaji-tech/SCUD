@@ -61,8 +61,8 @@ def train(cfg: DictConfig) -> None:
                        "Classical": ClassicalDiffusion,
                        "SM_SCUD_PT": SM_SCUD_PT}
     model_kwargs = {}
-    if hasattr(cfg.model, 'score_weighted_loss'):
-        model_kwargs['score_weighted_loss'] = cfg.model.score_weighted_loss
+    if hasattr(cfg.model, 'correction_weighting'):
+        model_kwargs['correction_weighting'] = cfg.model.correction_weighting
     model = model_name_dict[cfg.model.model](
         x0_model_class,
         nn_params,
